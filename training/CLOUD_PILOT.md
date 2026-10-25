@@ -203,10 +203,79 @@ If measured throughput holds, eight fixed 10M-transition runs would take roughly
 evaluation. Only episode 16 has been profiled with GPU replay; later training
 and different contact behavior can change throughput. This estimate concerns
 the fixed transition budget, not the time required to learn successful policies.
-The existing 2-hour/run wall cap remains. The full eight-run comparison has not
-been started as part of environment validation.
+The existing 2-hour/run wall cap remains. Environment validation finished before
+the full eight-run comparison was started; its execution record is below.
 
 Detailed reports and exported trajectories are retained on the cloud under
 `project/outputs/cloud_*`; a small local copy is under
 `outputs/cloud/validation_results`. Large checkpoints and control traces remain
 on the cloud instance.
+
+## Eight-run execution and notifications
+
+The full queue started at **2026-10-25 18:34:33 UTC**, using learner commit
+`484cff143df19cec4efdd7e5dd3fc55f232c2bc8`. It trains and then evaluates each of
+the eight entries in `outputs/policy_pilot_two/plan.json`, with 10M transitions
+or a 2-hour training cap per entry. Every entry initializes independently.
+The command is the batch command above with `--max-jobs 8 --evaluate`.
+
+The detached launcher is `/root/autodl-tmp/v2d/run_pilot.sh`; it holds a `flock`
+lock and records its PID, start/end timestamps and exit code under `logs/`.
+`logs/pilot.log` records the combined training/evaluation output. A failed
+subprocess stops the queue instead of silently skipping that experiment.
+The first run exceeded 2.8M transitions at approximately 7,000 transitions/s;
+its learned dynamics passed the held-out validation gate and enabled imagined
+actor updates. This verifies learning is active, not manipulation success.
+
+**User instruction: keep the instance powered on and notify immediately on
+completion or failure. No automatic shutdown is installed.** A one-minute
+heartbeat named `Watch AutoDL policy pilot` checks this chat's running queue.
+It reports completion, failure, missing queue processes, stalled activity, or
+a lost monitoring connection. Routine unchanged checks remain quiet. The
+heartbeat is paused after the final completion/failure notice.
+
+`training/cloud_status.py` provides a standard-library, read-only JSON snapshot.
+On the server it lives at `/root/autodl-tmp/v2d/cloud_status.py`, outside the
+immutable learner deployment. Its dedicated SSH key is restricted by
+`authorized_keys` to that one command, without shell or forwarding access.
+The private key stays outside the repository. On the configured Windows host:
+
+```powershell
+ssh -T -i "$env:USERPROFILE/.ssh/v2d_autodl_monitor" `
+  -o BatchMode=yes -o ConnectTimeout=15 -p 23073 root@connect.bjb1.seetacloud.com
+```
+
+The snapshot includes all eight runs, latest learning metrics, evaluation
+results, exit status and approximate queue cost at the user-quoted price.
+Queue completion requires all eight evaluation reports; an exit code alone
+does not establish completion. A finite trajectory does not establish successful
+tracking. Costs exclude earlier setup and any powered-on time after completion.
+
+## China-side transfers
+
+Research downloads ran concurrently with training. Use AutoDL's documented
+academic accelerator in a download-only subshell:
+
+```bash
+(source /etc/network_turbo; git clone --depth 1 --filter=blob:none --no-checkout URL)
+```
+
+Use sparse checkout and skip Git LFS assets when only inspecting source. The
+checkpoint download used `hf-mirror.com`, a pinned revision, range resumption,
+and final SHA-256/size checks. It transferred 221,362,447 bytes in 69.8 seconds
+directly onto the China instance. Only an 8.6 KB evidence archive came back to
+the local computer; the weights remain on the server. Python packages use the
+Aliyun index already configured above, with cached wheels and simulator assets.
+See [AutoDL academic acceleration](https://api.autodl.com/docs/network_turbo/).
+
+For future large private inputs, AutoPanel can transfer between the instance
+and an authorized cloud drive or OSS account without routing the transfer through
+the browser's computer. No cloud-drive account has been connected here. Regional
+AutoDL NAS also permits uploads while the GPU instance is off and sharing between
+instances in the same region; copy hot training data to `autodl-tmp` for faster
+reads. See [AutoPanel transfers](https://api.autodl.com/docs/netdisk/) and
+[regional NAS](https://api.autodl.com/docs/nas/).
+
+The reproduction survey, checkpoint contract, and reuse conclusions are in
+[SUPERMIMIC_REUSE.md](SUPERMIMIC_REUSE.md). Raw evidence is retained under
+`outputs/cloud/research_evidence/` locally and `research/` on the server.

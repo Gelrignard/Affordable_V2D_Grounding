@@ -5,6 +5,11 @@ user's quoted approximately **2 CNY/hour**. The user also quotes 3090 at
 **1.5 CNY/hour per card**. These are user-provided quotes, not a verified live
 AutoDL tariff. L40, 4090 D and 3080 Ti quotes are not yet supplied.
 
+Allocation update, 25 October: the user purchased the instance for a full week
+and wants it kept powered on. Hourly figures below are earlier allocation
+comparisons, not additional charges for the prepaid week. Track elapsed GPU
+time and progress toward the 90 episode/tier policies instead.
+
 | Option | Memory available to one job | How this implementation uses it | Allocation judgment |
 | --- | --- | --- | --- |
 | RTX 4090 | 24 GB | One simulator + frozen SONIC + residual learner | Preferred first profile at the quoted price |
@@ -228,7 +233,7 @@ its learned dynamics passed the held-out validation gate and enabled imagined
 actor updates. This verifies learning is active, not manipulation success.
 
 **User instruction: keep the instance powered on and notify immediately on
-completion or failure. No automatic shutdown is installed.** A one-minute
+completion or failure. No automatic shutdown is installed.** A ten-minute
 heartbeat named `Watch AutoDL policy pilot` checks this chat's running queue.
 It reports completion, failure, missing queue processes, stalled activity, or
 a lost monitoring connection. Routine unchanged checks remain quiet. The
@@ -249,7 +254,19 @@ The snapshot includes all eight runs, latest learning metrics, evaluation
 results, exit status and approximate queue cost at the user-quoted price.
 Queue completion requires all eight evaluation reports; an exit code alone
 does not establish completion. A finite trajectory does not establish successful
-tracking. Costs exclude earlier setup and any powered-on time after completion.
+tracking. The endpoint retains the original hourly-equivalent cost field for
+comparison; it does not represent an extra charge on the prepaid allocation.
+
+At approximately 7,000 transitions/s, a 10M-transition budget takes about
+24 minutes of learning per policy. Ninety such policies would take about
+36 hours of learning sequentially; plan roughly 40–60 hours for a first pass
+including initialization and evaluation. This extrapolates the first pilot
+episode, not a measured result for all tiers or a time-to-success guarantee.
+One week leaves room for diagnosis and targeted retries. The current pilot
+continues sequentially. Before expanding it, benchmark two independent learners
+sharing the 4090 against sequential aggregate throughput; fitting in VRAM alone
+does not imply faster training. The 90-policy submission pass needs one selected
+variant per episode/tier, not both pilot comparison variants.
 
 ## China-side transfers
 

@@ -1,0 +1,8 @@
+# CPU preparation/tests only. GPU simulation uses the pinned runtime pyproject.
+numpy==2.4.6
+scipy==1.17.1; python_version < '3.12'
+scipy==1.18.0; python_version >= '3.12'
+pyarrow==24.0.0
+trimesh==4.12.2
+usd-core==26.5
+torch==2.8.0

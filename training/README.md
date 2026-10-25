@@ -141,42 +141,57 @@ docker run --rm --gpus all \
   v2d-policy:pilot python -m training doctor --runtime /opt/v2d-runtime
 ```
 
-The recipe follows the pinned runtime's driver assumption (host driver >=580).
-It has not been built locally. Alternatively, in a dedicated Linux environment:
+The container recipe follows the pinned runtime's CUDA 13 driver assumption
+(host driver >=580). It has not been built locally. The provisioned AutoDL host
+instead uses CUDA 12, its existing PyTorch, and Microsoft's CUDA 12 ONNX build;
+follow [the measured AutoDL setup](CLOUD_PILOT.md) on that machine. For a separate
+dedicated CUDA 12 environment, install the CUDA 12 ONNX build before resolving
+the runtime package, then verify on the actual host:
 
 ```bash
 python -m training.bootstrap --runtime vendor/flash-runtime --download-assets
 pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+pip install --no-deps onnxruntime-gpu==1.28.0 \
+  --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
 pip install vendor/flash-runtime/robotic_grounding/flash_chord
 python -m training doctor --runtime vendor/flash-runtime
+python -m training.gpu_preflight --runtime vendor/flash-runtime
 ```
 
 Bootstrap requires Git/Git LFS and fetches G1 meshes and SONIC weights. It refuses
 to alter an existing unpinned or dirty runtime. `doctor` reports dependencies,
 CUDA and asset hashes; environment construction verifies SONIC hashes and the
 clean runtime commit. A 133-byte LFS pointer is not a model. `doctor` is a readiness
-report, not a completed simulator smoke test.
+report, not a completed simulator smoke test. `gpu_preflight` compiles a CUDA
+kernel and runs both SONIC networks, rejecting CPU fallback. The adapter also
+recomputes derived robot frame poses from the resampled joints at 50 Hz, so
+independent Cartesian interpolation cannot violate the runtime's FK checks.
 
 ## Profile, train and evaluate
 
-The 4090 config starts with 256 worlds and CPU replay, keeping the augmented
-state replay off the 24 GB GPU. Profile before choosing final world/batch counts.
+The measured 4090 config uses 256 worlds and GPU replay. On the provisioned
+instance, the episode-16 profile used 4.4 GiB total device memory and reached
+about 8,200 transitions/s after warmup, versus 4,900/s with CPU replay. See
+[profile scope and results](CLOUD_PILOT.md); this is a throughput measurement,
+not a task-success comparison. `replay_device: "cuda"` follows the selected
+CUDA device, including when independent jobs use separate GPUs. The generic
+`TrainConfig` default remains CPU replay for other machines.
 
 ```bash
 python -m training profile \
-  --job /jobs/tier2/episode_000018/corrected \
+  --job /jobs/tier2/episode_000016/corrected \
   --runtime /opt/v2d-runtime --config training/configs/4090_pilot.json \
   --output /runs/profile --hours 0.1 --transitions 250000
 
 python -m training train \
-  --job /jobs/tier2/episode_000018/corrected \
+  --job /jobs/tier2/episode_000016/corrected \
   --runtime /opt/v2d-runtime --config training/configs/4090_pilot.json \
-  --output /runs/episode18 --algorithm model_based --hours 2
+  --output /runs/episode16 --algorithm model_based --hours 2
 
 python -m training evaluate \
-  --job /jobs/tier2/episode_000018/corrected \
-  --runtime /opt/v2d-runtime --checkpoint /runs/episode18/latest.pt \
-  --output /runs/episode18_eval --worlds 1
+  --job /jobs/tier2/episode_000016/corrected \
+  --runtime /opt/v2d-runtime --checkpoint /runs/episode16/latest.pt \
+  --output /runs/episode16_eval --worlds 1
 ```
 
 Use `--algorithm sac` under identical settings for the learner comparison.

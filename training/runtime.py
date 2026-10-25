@@ -8,6 +8,7 @@ import hashlib
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,7 @@ import torch
 
 from . import RUNTIME_COMMIT
 from .bundles import arrays, sha256
+from .kinematics import URDFKinematics
 from .prepare import load_job
 from .wrench import basis_directions, capability_reward, wrench_support
 
@@ -52,6 +54,26 @@ def materialize_motion(job_dir, destination):
 def canonical_urdf_sha(path):
     # Git's Windows checkout changes line endings, not the robot model.
     return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def synchronize_reference_frames(reference, urdf):
+    """Recompute derived link poses after joint/root resampling at control rate.
+
+    Interpolating link poses independently does not preserve nonlinear FK.
+    Keep the observed object motion and all robot joint/root samples unchanged.
+    """
+    poses = URDFKinematics(urdf).poses(
+        reference.robot_joint_pos(),
+        reference.robot_root_pos_w(),
+        reference.robot_root_quat_w(),
+        reference.robot_joint_names(),
+        reference.robot_frame_names(),
+    )
+    return replace(
+        reference,
+        _robot_frame_pos_w=np.ascontiguousarray(poses[..., :3], dtype=np.float32),
+        _robot_frame_quat_w=np.ascontiguousarray(poses[..., 3:], dtype=np.float32),
+    )
 
 
 def canonical_history(history, head, initialized):
@@ -178,8 +200,11 @@ class SonicEnv:
         cfg.embodiment.config.asset_sha256 = sha256(urdf)
         self.resolved_config = OmegaConf.to_container(cfg.env, resolve=True)
         self.control_fps = float(cfg.sim.fps)
-        self.reference = load_reference(
-            motion, control_fps=self.control_fps, source_frame_playback=False
+        self.reference = synchronize_reference_frames(
+            load_reference(
+                motion, control_fps=self.control_fps, source_frame_playback=False
+            ),
+            urdf,
         )
         self.source_reference = arrays(self.job_dir / "reference.npz")
         self.guidance = arrays(self.job_dir / "guidance.npz")
@@ -213,6 +238,12 @@ class SonicEnv:
                 "this implementation supports the pilot's single rigid object"
             )
         action = self.env.action
+        for session in (action.encoder_session, action.decoder_session):
+            if session.provider != "CUDAExecutionProvider":
+                raise RuntimeError(
+                    "SONIC fell back to CPU. Install the ONNX Runtime CUDA build "
+                    "matching the host driver and PyTorch, then run training.gpu_preflight."
+                )
         self.action_names = list(action.residual_joint_names) + list(
             action.finger_joint_names
         )
@@ -245,6 +276,7 @@ class SonicEnv:
             "env": self.resolved_config,
             "robot_canonical_sha256": canonical_urdf_sha(urdf),
             "controller": "frozen_sonic",
+            "reference_frame_sampling": "urdf_fk_at_control_rate",
             "contact_force_scale_n": 100.0,
             "control_fps": self.control_fps,
             "version": 1,

@@ -45,28 +45,36 @@ does not prove lower cost per successful policy.
 ## First allocation and profile
 
 Use the reduced recipe, not NVIDIA's full 2,048-world/10M-replay recipe. Ours
-starts with 256 worlds, 131,072 CPU replay transitions and a small MLP world
-model. A 24 GB GPU is a reasonable target, but has not yet been fit-tested.
+uses 256 worlds, 131,072 GPU replay transitions and a small MLP world
+model. The episode-16 GPU replay profile fits in 4.4 GiB on the provisioned
+4090; CPU replay profiles of both episodes fit in about 2.0 GiB of device memory.
 For a 12 GB card, 64–128 worlds are profiling candidates, not validated settings.
 Hold the chosen learner settings constant across the eight comparison runs.
 
-Before renting, choose a host meeting the pinned runtime's **Linux / NVIDIA
-driver >=580** requirement. A selectable CUDA image does not change the host
-driver. The upstream runtime supports installation without Docker, useful for
-AutoDL container instances. Start with Python 3.11 and the pinned dependencies;
-do not assume an arbitrary preinstalled PyTorch image matches them.
+The upstream CUDA 13 / JAX training image requires **Linux / NVIDIA driver
+>=580**. Our PyTorch learner does not use JAX. A CUDA 12 installation can reuse
+a compatible preinstalled PyTorch, but must verify actual Warp kernels and
+SONIC GPU inference before running physics. In particular, the default
+`onnxruntime-gpu==1.28.0` wheel downloaded on this host requires CUDA 13;
+Microsoft also publishes a CUDA 12 build of the same version. Merely seeing
+`CUDAExecutionProvider` in the available-provider list does not prove it loaded.
+A selectable CUDA image does not change the host driver. The upstream runtime
+supports installation without Docker and Python 3.11/3.12.
 See the [pinned FlashCHORD setup](https://github.com/nvidia-isaac/video_to_data/blob/8c778f905cb35f76f8e6cd6e2ea486da4fb9e0ef/robotic_grounding/flash_chord/README.md).
 
 As provisioning headroom, prefer at least 16 vCPUs and 64 GB system RAM for one
 GPU; two simultaneous jobs benefit from roughly twice the host resources.
-These are practical targets, not measured minimums. This training path uses
-CPU replay, so CPU/PCIe bandwidth and RAM also matter. Keep weights, compiler
+These are practical targets, not measured minimums. CPU replay remains an
+option for other machines; its CPU/PCIe bandwidth and RAM also matter. Keep weights, compiler
 caches, jobs and checkpoints on persistent storage. AutoDL's
 [GPU selection guide](https://www.autodl.com/docs/gpu/) also distinguishes GPU,
 CPU and host-memory selection.
 
 1. Install and fetch actual SONIC weights; the local LFS pointers are not weights.
 2. Run `python -m training doctor --runtime vendor/flash-runtime`.
+   Then run `python -m training.gpu_preflight --runtime vendor/flash-runtime`.
+   This compiles a Warp CUDA kernel, checks the two exact SONIC model hashes,
+   and runs both networks while rejecting CPU fallback.
 3. Start a bounded profile of episode 16, then check episode 5 before the batch.
    Exclude first-time compilation from steady-state throughput, but include it
    in rental cost. Record total device peak usage (including simulator/ONNX),
@@ -84,3 +92,121 @@ One seed is an affordable paired pilot. The eight runs compare original versus
 corrected references within Tier 1 and Tier 2; they do not independently measure
 our learner against CHORD. The goal remains higher quality or lower cost, and
 the viewer and current tests do not establish that result yet.
+
+## Provisioned AutoDL instance
+
+The instance inspected on 25 October 2026 has one RTX 4090 (24,564 MiB), driver
+570.124.04, 16 CPU cores of cgroup quota, 120 GiB RAM, and a 50 GB data disk.
+The base environment supplies Python 3.12.3 and PyTorch 2.7.0+cu128. We reuse
+that PyTorch in a `--system-site-packages` virtual environment rather than
+download another CUDA/PyTorch stack. This differs from the local CPU test
+environment's PyTorch 2.8; keep the difference in experiment provenance.
+
+Deployment layout:
+
+- `/root/autodl-tmp/v2d/project`: training code, pinned runtime, eight prepared jobs.
+- `/root/autodl-tmp/v2d/.venv`: project dependency overlay; base environment is preserved.
+- `/root/autodl-tmp/v2d/cache`: pip downloads, hashed LFS assets and CoACD cache.
+- `/root/autodl-tmp/v2d/logs`: installation, tests, GPU checks and resource logs.
+- `/root/autodl-tmp/v2d/activate.sh`: environment variables and project directory.
+
+The initial upload is 33,950,284 bytes, with identical immutable job files
+deduplicated. The transfer manifest records every included file hash, source
+commit `e892b04`, and runtime commit
+`8c778f905cb35f76f8e6cd6e2ea486da4fb9e0ef`. Subsequent code fixes are small
+overlays and must be recorded separately. Only the two SONIC networks and G1
+assets are fetched from NVIDIA; no Tier 3 data or full CHORD training corpus
+is downloaded. Every LFS object is checked against its Git SHA-256 and size.
+
+Ordinary Python dependencies use `https://mirrors.aliyun.com/pypi/simple` and
+the versions in the pinned runtime's `pyproject.toml`. ONNX Runtime is the
+exception: install its CUDA 12 build from Microsoft's feed, with dependencies
+already present:
+
+```bash
+source /root/autodl-tmp/v2d/activate.sh
+python -m pip install --force-reinstall --no-deps \
+  --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/ \
+  onnxruntime-gpu==1.28.0
+python -m training.gpu_preflight --runtime vendor/flash-runtime
+```
+
+For this CPython 3.12 Linux CUDA 12 wheel, the feed's SHA-256 is
+`6e33c999981b746684fea80f3cc3d42dd651a76431a7bb4b03368a58e2db5b88`.
+Keep its cached wheel for restarts; do not repeat this download on a configured
+instance. The Warp 1.14.0 wheel uses CUDA 12.9; a compiled CUDA kernel executed
+on this host's 570 driver. Do not infer complete simulator compatibility from
+that kernel alone: the physical smoke run and full evaluation are separate checks.
+
+The training plan remains `outputs/policy_pilot_two/plan.json`: episodes 5 and
+16, both tiers, both reference variants, one learner and seed 0. After physical
+validation, a bounded independent run can be started with:
+
+```bash
+source /root/autodl-tmp/v2d/activate.sh
+python -m training batch --plan outputs/policy_pilot_two/plan.json \
+  --runtime vendor/flash-runtime --max-jobs 1 --evaluate --device cuda:0
+```
+
+The command runs the first job. Use `--start N` for a later planned job, and
+`--max-jobs 8` only when intending to run the full eight-run budget. Existing
+output directories are rejected rather than overwritten. Use `nohup` or a
+terminal multiplexer for long runs; retain stdout, checkpoints and evaluations
+on the data disk. AutoDL instance billing continues while it is running, even
+when this command has finished.
+
+## Measured validation results
+
+All three profiles below used 256 worlds, 250,112 collected transitions,
+921 SAC updates and 464 world-model updates. Throughput excludes the first
+32,768 transitions. Total GPU peaks were sampled with `nvidia-smi`, including
+SONIC and physics allocations, rather than PyTorch allocations alone.
+
+| Setup profile | Replay | Training loop | Transitions/s after warmup | Total GPU peak |
+| --- | --- | --- | --- | --- |
+| Tier 1, episode 16, original | CPU | 48.7 s | 4,913 | 2,051 MiB |
+| Tier 2, episode 5, corrected | CPU | 51.8 s | 4,620 | 2,075 MiB |
+| Tier 1, episode 16, original | GPU | 29.3 s | 8,218 | 4,495 MiB |
+
+GPU replay improved throughput about 1.67x on the tested episode. The two
+episode-16 profiles enabled imagined updates in 17 and 16 collection rounds,
+respectively; the episode-5 model did not pass its validation threshold within
+this short profile. Replay placement also changes the RNG stream used for
+sampling, so this is a practical throughput comparison, not identical stochastic
+training or evidence of improved policy quality. The 4090 recipe and both
+deployed/local eight-run plans now use GPU replay. The previous CPU plan is
+preserved as `plan.before_gpu_replay.json`. Defaults for other machines still
+allow CPU replay.
+
+The first physical eight-world smoke run took 333.7 seconds including cold
+startup/compilation, then collected 2,048 transitions in a 2.4-second loop.
+Warm startup plus the episode-16 GPU replay profile took 58.6 seconds overall.
+Caches are retained on the data disk.
+
+Full evaluations completed for both short-trained checkpoints, with no resets
+or object assistance: episode 16 recorded 794 physical control steps and all
+477 source frames; episode 5 recorded 1,671 steps and all 1,003 source frames.
+Both exported Parquet files were accepted by the official submission kit reader.
+The trajectories stayed finite, but both policies triggered tracking termination
+and continued recording afterward. Their mean object-position errors against
+their respective tier inputs were 0.490 m and 0.928 m. These are setup
+checkpoints, not successful submissions or a correction-quality comparison.
+
+Sixteen tests pass on the cloud host, including all eight prepared jobs. The
+physical test exposed an independent interpolation/FK mismatch, now fixed by
+recomputing derived palm poses after control-rate resampling. Joint/root and
+observed object trajectories remain unchanged. The adapter rejects SONIC CPU
+fallback, and the GPU preflight confirms both networks execute on CUDA.
+
+If measured throughput holds, eight fixed 10M-transition runs would take roughly
+3–5 training hours (about 6–10 CNY at the quoted price), plus initialization and
+evaluation. Only episode 16 has been profiled with GPU replay; later training
+and different contact behavior can change throughput. This estimate concerns
+the fixed transition budget, not the time required to learn successful policies.
+The existing 2-hour/run wall cap remains. The full eight-run comparison has not
+been started as part of environment validation.
+
+Detailed reports and exported trajectories are retained on the cloud under
+`project/outputs/cloud_*`; a small local copy is under
+`outputs/cloud/validation_results`. Large checkpoints and control traces remain
+on the cloud instance.

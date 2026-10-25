@@ -58,10 +58,18 @@ def parser():
     plan.add_argument("--config", required=True)
     plan.add_argument("--output", required=True)
     plan.add_argument(
+        "--experiment",
+        default=str(
+            Path(__file__).resolve().parent / "configs/rl_pilot_two.json"
+        ),
+        help="episode/tier/variant selection; defaults to the eight-run pilot",
+    )
+    plan.add_argument(
         "--algorithms",
         nargs="+",
         choices=["sac", "model_based"],
-        default=["sac", "model_based"],
+        default=None,
+        help="defaults to the single learner in --config",
     )
     plan.add_argument("--seeds", nargs="+", type=int, default=[0])
     plan.add_argument(
@@ -78,6 +86,9 @@ def parser():
     batch.add_argument("--max-jobs", type=int, default=1)
     batch.add_argument("--start", type=int, default=0)
     batch.add_argument("--evaluate", action="store_true")
+    batch.add_argument("--device", help="device for both training and evaluation")
+    batch.add_argument("--shard-index", type=int, default=0)
+    batch.add_argument("--shard-count", type=int, default=1)
     doctor = sub.add_parser(
         "doctor", help="check runtime, assets and GPU visibility; does not train"
     )
@@ -91,6 +102,18 @@ def make_plan(args):
     from .prepare import load_job
 
     config = TrainConfig.load(args.config)
+    experiment = json.loads(Path(args.experiment).read_text(encoding="utf-8"))
+    selected = {
+        (tier, episode, variant)
+        for tier in experiment["tiers"]
+        for episode in experiment["episodes"]
+        for variant in experiment["variants"]
+    }
+    if not selected or any(
+        t not in (1, 2) or v not in ("original", "corrected") for t, _, v in selected
+    ):
+        raise ValueError("experiment must select Tier 1/2 original/corrected jobs")
+    algorithms = args.algorithms or [config.algorithm]
     output = Path(args.output).resolve()
     if output.exists():
         raise FileExistsError(output)
@@ -99,12 +122,16 @@ def make_plan(args):
         os.path.relpath(Path(path).resolve(), output.parent)
     ).as_posix()
     jobs = sorted(Path(args.jobs).resolve().rglob("job.json"))
-    entries, previous = [], {}
+    entries, previous, found = [], {}, set()
     for path in jobs:
         job = load_job(path.parent)
-        if job["tier"] not in (1, 2):
+        identity = (job["tier"], job["episode_index"], job["variant"])
+        if identity not in selected:
             continue
-        for algorithm in args.algorithms:
+        if identity in found:
+            raise ValueError(f"duplicate selected job: {identity}")
+        found.add(identity)
+        for algorithm in algorithms:
             for seed in args.seeds:
                 run = (
                     Path("runs")
@@ -132,8 +159,8 @@ def make_plan(args):
                     ).as_posix()
                 previous[scope] = run
                 entries.append(entry)
-    if not entries:
-        raise ValueError("no prepared Tier 1/2 jobs found")
+    if found != selected:
+        raise ValueError(f"missing selected jobs: {sorted(selected - found)}")
     plan = {
         "schema": "v2d_training_plan_v1",
         "config": config.to_dict(),
@@ -142,6 +169,7 @@ def make_plan(args):
         "configured_max_training_hours": len(entries) * config.max_hours,
         "budget_note": "configured cap, not a prediction; initialization/evaluation are additional",
         "model_transfer": args.warm_models,
+        "experiment": experiment,
     }
     output.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
     return {
@@ -156,14 +184,28 @@ def batch_run(args):
     from .bundles import sha256
     from .prepare import load_job
 
-    if args.max_jobs <= 0 or args.start < 0:
+    if (
+        args.max_jobs <= 0
+        or args.start < 0
+        or args.shard_count < 1
+        or not 0 <= args.shard_index < args.shard_count
+    ):
         raise ValueError("invalid batch bounds")
     path = Path(args.plan).resolve()
     plan = json.loads(path.read_text())
     if plan.get("schema") != "v2d_training_plan_v1":
         raise ValueError("unknown plan schema")
+    if plan.get("obsolete"):
+        raise ValueError(
+            "obsolete experiment plan; generate the current two-episode pilot"
+        )
+    if args.shard_count > 1 and plan.get("model_transfer"):
+        raise ValueError(
+            "independent shards cannot preserve sequential world-model transfer"
+        )
+    selected_entries = plan["entries"][args.shard_index :: args.shard_count]
     completed = []
-    for entry in plan["entries"][args.start : args.start + args.max_jobs]:
+    for entry in selected_entries[args.start : args.start + args.max_jobs]:
         job, output = path.parent / entry["job"], path.parent / entry["output"]
         load_job(job)
         if sha256(job / "job.json") != entry["job_sha256"]:
@@ -172,7 +214,10 @@ def batch_run(args):
             raise FileExistsError(f"planned run already has output: {output}")
         output.mkdir(parents=True, exist_ok=True)
         config = output / "planned_config.json"
-        config.write_text(json.dumps(plan["config"], indent=2) + "\n", encoding="utf-8")
+        values = dict(plan["config"])
+        if args.device:
+            values["device"] = args.device
+        config.write_text(json.dumps(values, indent=2) + "\n", encoding="utf-8")
         command = [
             sys.executable,
             "-m",
@@ -209,6 +254,8 @@ def batch_run(args):
                     str(output / "latest.pt"),
                     "--output",
                     str(output / "evaluation"),
+                    "--device",
+                    values["device"],
                 ],
                 check=True,
             )

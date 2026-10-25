@@ -104,7 +104,7 @@ python -m training inspect --bundle /path/to/rl_pilot_handoff_20261024
 python -m training prepare \
   --bundle /path/to/rl_pilot_handoff_20261024 \
   --urdf /path/to/g1/main_with_hand.urdf \
-  --output outputs/training_jobs --all --variants original corrected
+  --output outputs/training_jobs_v1 --all --variants original corrected
 ```
 
 Use `--tier 2 --episode 18` instead of `--all` for one episode. Preparation checks
@@ -219,13 +219,26 @@ errors use same-tier input references, **not clean-reference Tier 2 scores**.
 
 ## Plan the controlled pilot
 
+The current pilot is **episode 5 (big black box) and episode 16 (spray bottle)**,
+Tier 1/2, original/corrected, seed 0, with the same model-based learner. This is
+eight runs. The roster is in `training/configs/rl_pilot_two.json`; it supersedes the
+earlier six-episode / two-learner sweep for policy training. The six-episode
+correction data remains available. "Original" is our contact-aware retargeting
+before correction, not NVIDIA's retargeter. This pilot isolates correction under
+one learner; it is not a direct performance comparison against full CHORD.
+
 ```bash
-python -m training plan --jobs outputs/training_jobs \
+python -m training plan --jobs outputs/training_jobs_v1 \
   --config training/configs/4090_pilot.json --output outputs/pilot/plan.json \
-  --algorithms sac model_based --seeds 0
+  --experiment training/configs/rl_pilot_two.json --seeds 0
 ```
 
-With 24 prepared jobs this plans 48 runs and starts none. `--warm-models` opts into
+The planner selects eight of the 24 prepared jobs and requires complete coverage.
+By default it uses only the algorithm in the config; an additional algorithm
+requires an explicit `--algorithms` override. The 2 h/run and 10M-transition
+limits are stop caps, not convergence predictions: at most 16 training GPU-hours,
+plus setup/evaluation. Keep score-versus-time and score-versus-transition curves,
+and account for correction cost. `--warm-models` opts into
 transfer within tier/variant/seed; leave it off for the first independent
 comparison. Each episode keeps its own actor. Relative paths allow plans to move
 with their job/run directory tree.
@@ -241,11 +254,43 @@ Each run uses a separate process to release CUDA/ONNX memory. Batches verify job
 hashes and stop on errors; they do not silently retry paid runs or overwrite an
 existing run.
 
+Two GPUs can run **independent policies**, one process per GPU. Memory is not
+pooled and one policy is not distributed across cards. Launch these in separate
+terminals (after profiling; no job starts merely by creating the plan):
+
+```bash
+python -m training batch --plan outputs/pilot/plan.json --runtime vendor/flash-runtime \
+  --shard-count 2 --shard-index 0 --max-jobs 4 --device cuda:0 --evaluate
+python -m training batch --plan outputs/pilot/plan.json --runtime vendor/flash-runtime \
+  --shard-count 2 --shard-index 1 --max-jobs 4 --device cuda:1 --evaluate
+```
+
+`--start` indexes entries within the selected shard. Shards are disjoint and
+cannot be combined with sequential world-model transfer. Evaluation uses the
+same GPU as training. On two separate one-GPU instances, use `cuda:0` for both
+and preserve the same plan and shard indices.
+
+## Local SONIC wiring and reference viewer
+
+```bash
+python -m training.viewer --jobs outputs/training_jobs_v1 \
+  --urdf vendor/flash-runtime/robotic_grounding/flash_chord/src/flash_chord/assets/urdfs/g1/main_with_hand.urdf \
+  --port 8766
+```
+
+Open http://127.0.0.1:8766. The viewer explains SONIC's encoder, feedback decoder,
+residual injection and training loop with links to the pinned code. It includes
+an action mixer, the eight-run matrix and budget calculator. The orbitable G1
+skeletons are FK previews of real original/corrected references, with object mesh
+bounds and source frame IDs. They are not trained SONIC or physical rollouts.
+Only the preview is sampled at 10 Hz; training data is unchanged. The server
+binds to localhost and serves only generated viewer assets. Ctrl+C stops it.
+
 ## Verification
 
 ```bash
 python -m unittest discover -s training/tests -v
-V2D_PREPARED_JOBS=outputs/training_jobs \
+V2D_PREPARED_JOBS=outputs/training_jobs_v1 \
 V2D_FLASH_RUNTIME=vendor/flash-runtime \
   python -m unittest discover -s training/tests -v
 ```

@@ -42,11 +42,11 @@ def last_metric(path):
     return {}
 
 
-def process_alive(pid, proc=Path("/proc")):
+def process_alive(pid, proc=Path("/proc"), script="run_pilot.sh"):
     try:
         # Match the launch script too: a recycled PID is not our training queue.
         command = (proc / str(pid) / "cmdline").read_bytes()
-        return b"run_pilot.sh" in command
+        return script.encode() in command
     except OSError:
         return False
 
@@ -55,13 +55,19 @@ def snapshot(root, *, now=None, alive=None):
     root = Path(root)
     now = time.time() if now is None else now
     logs = root / "logs"
-    plan_path = root / "project/outputs/policy_pilot_two/plan.json"
+    monitor = read_json(root / "monitor_config.json") or {}
+    prefix = monitor.get("log_prefix", "pilot")
+    plan_path = root / monitor.get("plan", "project/outputs/policy_pilot_two/plan.json")
     plan = read_json(plan_path)
     if not plan or not plan.get("entries"):
         raise ValueError(f"missing or invalid pilot plan: {plan_path}")
-    pid = read_json(logs / "pilot_pid.txt")
-    running = process_alive(pid) if alive is None else alive
-    exit_code = read_json(logs / "pilot_exit_code.txt")
+    pid = read_json(logs / f"{prefix}_pid.txt")
+    running = (
+        process_alive(pid, script=monitor.get("script", "run_pilot.sh"))
+        if alive is None
+        else alive
+    )
+    exit_code = read_json(logs / f"{prefix}_exit_code.txt")
     activity = []
     runs = []
     for entry in plan["entries"]:
@@ -78,10 +84,19 @@ def snapshot(root, *, now=None, alive=None):
             phase = "evaluating"
         if evaluation:
             phase = "complete"
+        milestones = sorted((output / "milestones").glob("*/evaluation.json"))
+        milestone = read_json(milestones[-1]) if milestones else None
         runs.append(
             {
                 "output": entry["output"],
                 "phase": phase,
+                "transition_budget": plan.get("config", {}).get("total_transitions"),
+                "latest_milestone": {
+                    "path": str(milestones[-1]),
+                    "evaluation": milestone,
+                }
+                if milestone
+                else None,
                 "metrics": {
                     key: (report or metric).get(key)
                     for key in (
@@ -95,6 +110,9 @@ def snapshot(root, *, now=None, alive=None):
                         "real_updates",
                         "validation_model_state_mse",
                         "stop_reason",
+                        "curriculum_stage",
+                        "assistance_scale",
+                        "first_frame_probability",
                     )
                     if key in (report or metric)
                 },
@@ -123,8 +141,8 @@ def snapshot(root, *, now=None, alive=None):
         ):
             if file.exists():
                 activity.append(file.stat().st_mtime)
-    if (logs / "pilot.log").exists():
-        activity.append((logs / "pilot.log").stat().st_mtime)
+    if (logs / f"{prefix}.log").exists():
+        activity.append((logs / f"{prefix}.log").stat().st_mtime)
     age = max(0, now - max(activity)) if activity else None
     completed = sum(run["phase"] == "complete" for run in runs)
     if exit_code is not None:
@@ -137,10 +155,10 @@ def snapshot(root, *, now=None, alive=None):
         state = "running"
     elapsed = None
     try:
-        started_text = (logs / "pilot_started_utc.txt").read_text().strip()
+        started_text = (logs / f"{prefix}_started_utc.txt").read_text().strip()
         started = datetime.fromisoformat(started_text)
         finished_text = (
-            (logs / "pilot_finished_utc.txt").read_text().strip()
+            (logs / f"{prefix}_finished_utc.txt").read_text().strip()
             if exit_code is not None
             else None
         )
@@ -153,6 +171,7 @@ def snapshot(root, *, now=None, alive=None):
     return {
         "checked_utc": datetime.fromtimestamp(now, UTC).isoformat(),
         "state": state,
+        "queue": prefix,
         "instance_power_policy": "keep_on_and_notify_user",
         "pid": pid,
         "queue_process_alive": running,
@@ -169,7 +188,7 @@ def snapshot(root, *, now=None, alive=None):
         "runs": runs,
         "research_checkpoint": read_json(root / "research/weights/manifest.json"),
         "research_sources": read_json(root / "research/repositories.json"),
-        "log_tail_on_error": tail(logs / "pilot.log", 6000)
+        "log_tail_on_error": tail(logs / f"{prefix}.log", 6000)
         if state not in ("running", "complete")
         else None,
     }

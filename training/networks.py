@@ -33,7 +33,15 @@ class Normalizer(nn.Module):
 
 
 class Actor(nn.Module):
-    def __init__(self, obs_dim, goal_dim, action_dim, hidden, action_mask=None):
+    def __init__(
+        self,
+        obs_dim,
+        goal_dim,
+        action_dim,
+        hidden,
+        action_mask=None,
+        initial_std=0.1353352832366127,
+    ):
         super().__init__()
         self.obs_dim = obs_dim
         self.norm = Normalizer(obs_dim + goal_dim)
@@ -41,7 +49,7 @@ class Actor(nn.Module):
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
         with torch.no_grad():
-            self.net[-1].bias[action_dim:].fill_(-2.0)
+            self.net[-1].bias[action_dim:].fill_(math.log(initial_std))
         self.register_buffer(
             "mask",
             torch.ones(action_dim) if action_mask is None else action_mask.float(),

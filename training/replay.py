@@ -27,6 +27,10 @@ class Replay:
     def size(self):
         return min(self.count, self.rows) * self.worlds
 
+    def clear(self):
+        """Forget trajectories at a curriculum reset without reallocating storage."""
+        self.cursor = self.count = 0
+
     @property
     def bytes(self):
         return sum(t.numel() * t.element_size() for t in self.data.values())

@@ -61,6 +61,7 @@ def restore_checkpoint(path, learner, identity):
         "checkpoint_interval",
         "log_interval",
         "capture_sim",
+        "evaluation_interval",
     }
     differences = {
         k

@@ -47,6 +47,10 @@ class TrainConfig:
     log_interval: int = 10
     first_frame_probability: float = 0.25
     capture_sim: bool = True
+    curriculum: str = "none"
+    curriculum_transitions: int = 349999104
+    evaluation_interval: int = 0
+    initial_action_std: float = 0.1353352832366127
 
     def validate(self):
         for key, value in self.to_dict().items():
@@ -54,6 +58,12 @@ class TrainConfig:
                 raise ValueError(f"{key} must be finite")
         if self.algorithm not in ("sac", "model_based"):
             raise ValueError("algorithm must be sac or model_based")
+        if self.curriculum not in ("none", "chord"):
+            raise ValueError("curriculum must be none or chord")
+        if self.curriculum_transitions <= 0 or self.evaluation_interval < 0:
+            raise ValueError("invalid curriculum/evaluation budget")
+        if not 0 < self.initial_action_std <= 1:
+            raise ValueError("initial_action_std must be in (0,1]")
         positive = (
             "worlds",
             "replay_capacity",

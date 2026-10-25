@@ -163,6 +163,8 @@ def evaluate(env, checkpoint_path, output):
     ).to(env.device)
     actor.load_state_dict(checkpoint["learner"]["actor"])
     actor.eval()
+    # Evaluation always disables both global and reset-time object assistance.
+    env.set_training_stage({"assistance_scale": 0.0, "first_frame_probability": 1.0})
     state, goal = env.reset(first=True)
     source = env.source_reference
     times = source["timestamps"] - source["timestamps"][0]

@@ -136,6 +136,8 @@ def support_geometry(path, max_shapes=8):
 class SonicEnv:
     def __init__(self, job_dir, runtime, config, scratch):
         self.cfg, self.job_dir = config, Path(job_dir).resolve()
+        self.assistance_scale = 0.0
+        self.first_frame_probability = config.first_frame_probability
         self.job = load_job(job_dir)
         self.device = torch.device(config.device)
         self.worlds = config.worlds
@@ -438,6 +440,28 @@ class SonicEnv:
             offset += value.shape[-1]
             pieces.append(value)
         self.goals = torch.cat(pieces, dim=-1)
+        if self.cfg.curriculum != "none":
+            self.goal_blocks["assistance"] = [offset, offset + 1]
+            self.goals = torch.cat(
+                (self.goals, torch.zeros(self.frames, 1, device=self.device)), dim=-1
+            )
+
+    def set_training_stage(self, stage):
+        self.synchronize()
+        self.env.set_voc_scale(stage["assistance_scale"])
+        self.synchronize()
+        if not torch.allclose(
+            self.tensor(self.env.object_control_scale),
+            torch.full_like(
+                self.tensor(self.env.object_control_scale), stage["assistance_scale"]
+            ),
+        ):
+            raise RuntimeError("simulator assistance differs from the requested stage")
+        self.assistance_scale = stage["assistance_scale"]
+        self.first_frame_probability = stage["first_frame_probability"]
+        if "assistance" in self.goal_blocks:
+            start, end = self.goal_blocks["assistance"]
+            self.goals[:, start:end] = self.assistance_scale
 
     def goal(self):
         return self.goals[
@@ -576,7 +600,7 @@ class SonicEnv:
             )
             frames[
                 torch.rand(self.worlds, generator=self.rng, device=self.device)
-                < self.cfg.first_frame_probability
+                < self.first_frame_probability
             ] = 0
         mask_i = mask.to(torch.int32).contiguous()
         self.synchronize()

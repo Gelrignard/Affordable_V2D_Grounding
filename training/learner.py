@@ -28,7 +28,12 @@ class Learner:
         self.device = torch.device(device or config.device)
         mask = torch.tensor(spec["action_mask"], device=self.device)
         self.actor = Actor(
-            spec["obs_dim"], spec["goal_dim"], spec["action_dim"], config.hidden, mask
+            spec["obs_dim"],
+            spec["goal_dim"],
+            spec["action_dim"],
+            config.hidden,
+            mask,
+            initial_std=config.initial_action_std,
         ).to(self.device)
         self.critic = Critic(
             spec["state_dim"], spec["goal_dim"], spec["action_dim"], config.hidden
@@ -72,6 +77,18 @@ class Learner:
             self.target.load_state_dict(self.critic.state_dict())
         if not self.model.norm.fitted:
             self.model.norm.fit(torch.cat((batch["state"], batch["goal"]), dim=-1))
+        # Assistance is constant during warmup but changes later. Keep its known
+        # [0,1] scale instead of estimating a near-zero warmup variance.
+        block = self.spec.get("interface", {}).get("goal_blocks", {}).get("assistance")
+        if block:
+            for module, width in (
+                (self.actor, self.spec["obs_dim"]),
+                (self.critic, self.spec["state_dim"]),
+                (self.target, self.spec["state_dim"]),
+                (self.model, self.spec["state_dim"]),
+            ):
+                module.norm.mean[width + block[0] : width + block[1]] = 0
+                module.norm.std[width + block[0] : width + block[1]] = 1
 
     @torch.no_grad()
     def act(self, state, goal, deterministic=False):

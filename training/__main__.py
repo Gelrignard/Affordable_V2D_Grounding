@@ -59,9 +59,7 @@ def parser():
     plan.add_argument("--output", required=True)
     plan.add_argument(
         "--experiment",
-        default=str(
-            Path(__file__).resolve().parent / "configs/rl_pilot_two.json"
-        ),
+        default=str(Path(__file__).resolve().parent / "configs/rl_pilot_two.json"),
         help="episode/tier/variant selection; defaults to the eight-run pilot",
     )
     plan.add_argument(
@@ -259,6 +257,12 @@ def batch_run(args):
                 ],
                 check=True,
             )
+        report = json.loads((output / "report.json").read_text())
+        if report["stop_reason"] != "transition_budget":
+            raise RuntimeError(
+                f"Training stopped at {report['transitions']} transitions: "
+                f"{report['stop_reason']}; checkpoint and evaluation preserved at {output}"
+            )
         completed.append(entry["output"])
     return {"completed": completed}
 
@@ -337,12 +341,43 @@ def main(argv=None):
                 "model training needs at least two worlds for held-out validation"
             )
         env = SonicEnv(args.job, args.runtime, config, Path(args.output) / "runtime")
+
+        def evaluate_checkpoint(checkpoint, output):
+            output.mkdir(parents=True, exist_ok=True)
+            with (output / "evaluation.log").open("w", encoding="utf-8") as stream:
+                subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "training",
+                        "evaluate",
+                        "--job",
+                        args.job,
+                        "--runtime",
+                        args.runtime,
+                        "--checkpoint",
+                        str(checkpoint),
+                        "--output",
+                        str(output),
+                        "--device",
+                        config.device,
+                    ],
+                    check=True,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                )
+            print(
+                json.dumps({"milestone_evaluation": str(output / "evaluation.json")}),
+                flush=True,
+            )
+
         result = train(
             env,
             config,
             args.output,
             getattr(args, "resume", None),
             getattr(args, "warm_model", None),
+            evaluate_checkpoint=evaluate_checkpoint,
         )
         if args.command == "profile":
             result["profile_note"] = (

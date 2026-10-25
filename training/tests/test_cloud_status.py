@@ -7,6 +7,39 @@ from training.cloud_status import snapshot
 
 
 class CloudStatusTests(unittest.TestCase):
+    def test_new_queue_does_not_reuse_completed_pilot_status(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output = root / "release/outputs/full/runs/example"
+            output.mkdir(parents=True)
+            logs = root / "logs"
+            logs.mkdir()
+            (logs / "pilot_exit_code.txt").write_text("0")
+            (root / "monitor_config.json").write_text(
+                json.dumps(
+                    {
+                        "plan": "release/outputs/full/plan.json",
+                        "log_prefix": "full",
+                        "script": "run_full.sh",
+                    }
+                )
+            )
+            (output.parent.parent / "plan.json").write_text(
+                json.dumps(
+                    {
+                        "entries": [{"output": "runs/example"}],
+                        "config": {"total_transitions": 350000000},
+                    }
+                )
+            )
+            (output / "metrics.jsonl").write_text(
+                '{"transitions": 20000, "curriculum_stage": 1, "assistance_scale": 0.75}\n'
+            )
+            result = snapshot(root, alive=True)
+            self.assertEqual(result["state"], "running")
+            self.assertEqual(result["queue"], "full")
+            self.assertEqual(result["runs"][0]["metrics"]["assistance_scale"], 0.75)
+
     def test_partial_metric_and_unexpected_process_exit(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

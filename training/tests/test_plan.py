@@ -83,7 +83,17 @@ class PlanTests(unittest.TestCase):
                             "--evaluate",
                         ]
                     )
-                    with patch("training.__main__.subprocess.run") as run:
+
+                    def fake_run(command, **kwargs):
+                        if "train" in command:
+                            output = Path(command[command.index("--output") + 1])
+                            (output / "report.json").write_text(
+                                json.dumps({"stop_reason": "transition_budget"})
+                            )
+
+                    with patch(
+                        "training.__main__.subprocess.run", side_effect=fake_run
+                    ) as run:
                         done = batch_run(batch)["completed"]
                         self.assertEqual(len(done), 4)
                         self.assertEqual(run.call_count, 8)

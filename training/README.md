@@ -318,3 +318,84 @@ a frozen model, SAC-only behavior, checkpoint/tier isolation, replay wraparound,
 terminal/reset ordering, evaluation progression, FK, wrench sign/scale, and
 quaternion/time export. The synthetic environment is only a test fixture and is
 never exported as challenge performance.
+
+## Completed two-episode pilot (2026-10-25)
+
+Eight independent runs used 10,000,128 simulator transitions each, seed 0, the
+same 256-world model-based learner, frozen SONIC, and no virtual object support.
+The queue took 11,889 seconds (3 h 18 min 9 s); training loops took 22.9–24.7
+minutes each. Inputs and code remain preserved in the original cloud `project`
+directory. The deployed learner commit was `484cff143df19cec4efdd7e5dd3fc55f232c2bc8`.
+
+Mean object-center position error over a full, unreset evaluation, in metres:
+
+| Tier | Episode | Original | Corrected |
+|---|---|---:|---:|
+| 1 | 5, big black box | 1.4595 | 0.5495 |
+| 1 | 16, spray bottle | 0.5570 | 0.6285 |
+| 2 | 5, big black box | 0.6093 | 0.4580 |
+| 2 | 16, spray bottle | 0.6325 | 0.6308 |
+
+Original means our retargeting before correction, not NVIDIA's retargeter.
+All eight trajectories were finite, but all encountered tracking termination
+within 1.72–4.88 seconds; recording continued through the entire episode. A
+tracking termination does not itself identify a robot fall. The official
+submission-kit SP-SR and MP-SR formulas both yield zero for every run **against
+the corresponding tier input reference**. These are pilot diagnostics, not
+successful manipulation, statistical significance, or official leaderboard
+scores. Correction helps episode 5 here, while episode 16 gives mixed results.
+
+The local artifact `outputs/policy_pilot_two/comparison.json` contains all eight
+training times, errors, failure times, and input-reference MPPE values calculated
+with the submission-kit math and its first-frame rigid alignment. Evaluation
+Parquets and physical traces are beside each run. Full checkpoints/logs remain
+on the prepaid cloud instance, which stays powered on.
+
+The challenge scores every tier against the clean object trajectory. Its
+[October 23 leaderboard snapshot](https://raw.githubusercontent.com/MVerghese/v2d-leaderboard-data/main/leaderboard.json)
+shows MPPE of 6.72 cm for the leading Tier 1 AUC entry (Chivatam), and 13.70 cm
+for the leading Tier 2 AUC entry (Xueyi Wang (FF)). MPPE averages six object-fixed
+points at 5 cm radius and includes orientation; it is not center-position error.
+Our two-episode, input-reference diagnostics cannot be ranked against those
+whole-tier clean-reference scores. Tier 1 clean data is not used to train,
+select, or tune Tier 2 policies.
+
+## Longer CHORD-informed training
+
+`configs/4090_full_chord_curriculum.json` and `configs/full_two.json` select four
+fresh runs: corrected episodes 5 and 16 in Tiers 1 and 2. Each gets 349,999,104
+transitions, matching the pinned G1/SONIC FlashCHORD schedule's budget. This is
+our PyTorch SAC/world-model learner with CHORD's assistance curriculum, not a
+reproduction of its PPO/FlashSAC optimizer or a direct CHORD comparison.
+
+Virtual object support follows 1, .75, .5, .25, .1, .05, then zero at 60% of the
+budget. Exact first-frame starts enter at 82.5% (25%) and 87.5% (50%); remaining
+starts sample the reference timeline. Unlike native CHORD's settling resets,
+our resets have no freeze period or extra reset-time assistance. Soft corrected
+posture targets, live contact/wrench guidance, and frozen SONIC remain in place.
+The raw residual bound is 10 and initial normalized action standard deviation
+is .05, matching the G1 FlashCHORD action-range/initial-noise recipe. Leg
+residuals remain disabled. These changes make this a new training recipe, not a
+continuation of the controlled pilot ablation.
+
+Assistance is an explicit policy, critic, and world-model goal input with fixed
+[0,1] normalization. Stage changes clear replay, reset the environments, and
+require fresh held-out model validation before imagined policy updates resume.
+Weights/optimizers continue across stages. Resume uses cumulative transition
+counts to recover the correct stage; the curriculum budget remains fixed.
+
+Full, unreset, zero-assistance evaluation runs every 35M transitions and at the
+end, in a separate process. Checkpoints are kept every 10M transitions, at stage
+boundaries, and for evaluations. A 24-hour cap per invocation preserves a
+checkpoint if throughput degrades; reaching that cap is reported as incomplete
+and stops the queue after evaluation. At pilot throughput, all four runs are
+estimated at roughly 55–60 hours plus evaluation overhead, not a guarantee.
+Finishing this transition budget does not establish convergence or task success.
+
+```bash
+python -m training plan --jobs outputs/training_jobs_v1 \
+  --config training/configs/4090_full_chord_curriculum.json \
+  --experiment training/configs/full_two.json --output outputs/policy_full_two/plan.json
+python -m training batch --plan outputs/policy_full_two/plan.json \
+  --runtime vendor/flash-runtime --max-jobs 4 --evaluate --device cuda:0
+```

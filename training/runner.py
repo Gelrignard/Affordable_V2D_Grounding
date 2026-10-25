@@ -7,15 +7,18 @@ from pathlib import Path
 import torch
 
 from .checkpoint import restore_checkpoint, restore_model, save_checkpoint, save_model
+from .curriculum import stage_at
 from .learner import Learner
 from .replay import Replay
 
 
-def train(env, config, output, resume=None, warm_model=None):
+def train(env, config, output, resume=None, warm_model=None, evaluate_checkpoint=None):
     if config.algorithm == "model_based" and env.worlds < 2:
         raise ValueError(
             "model training needs at least two worlds for held-out validation"
         )
+    if config.evaluation_interval and evaluate_checkpoint is None:
+        raise ValueError("periodic evaluation requires an evaluation callback")
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     if (output / "run.json").exists():
@@ -57,7 +60,11 @@ def train(env, config, output, resume=None, warm_model=None):
     (output / "run.json").write_text(
         json.dumps(record, indent=2) + "\n", encoding="utf-8"
     )
-    state, goal = env.reset(first=True)
+    stage = None
+    if config.curriculum == "chord":
+        stage = stage_at(previous_transitions, config.curriculum_transitions)
+        env.set_training_stage(stage)
+    state, goal = env.reset(first=stage is None)
     transitions, collections, update_credit, next_save = (
         0,
         0,
@@ -74,6 +81,12 @@ def train(env, config, output, resume=None, warm_model=None):
     )
     mask = torch.tensor(env.spec["action_mask"], device=learner.device)
     log_path = output / "metrics.jsonl"
+    next_evaluation = (
+        (previous_transitions // config.evaluation_interval + 1)
+        * config.evaluation_interval
+        if config.evaluation_interval
+        else None
+    )
 
     def elapsed():
         return time.monotonic() - started
@@ -93,6 +106,28 @@ def train(env, config, output, resume=None, warm_model=None):
                 if elapsed() >= config.max_hours * 3600:
                     stop_reason = "wall_budget"
                     break
+                if stage is not None:
+                    current_stage = stage_at(
+                        previous_transitions + transitions,
+                        config.curriculum_transitions,
+                    )
+                    if current_stage != stage:
+                        save(output / f"stage_{stage['stage']}_final.pt")
+                        stage = current_stage
+                        env.set_training_stage(stage)
+                        state, goal = env.reset()
+                        # A full reset at changed dynamics must not create fake
+                        # multi-step sequences across two curriculum stages.
+                        replay.clear()
+                        update_credit = 0.0
+                        learner.model_ready = False
+                        learner.last_validation = {}
+                        print(
+                            json.dumps(
+                                {"curriculum": stage, "transitions": transitions}
+                            ),
+                            flush=True,
+                        )
                 metrics, collected, rewards, failures = {}, 0, [], []
                 for _ in range(config.collection_steps):
                     if (
@@ -100,7 +135,7 @@ def train(env, config, output, resume=None, warm_model=None):
                         or elapsed() >= config.max_hours * 3600
                     ):
                         break
-                    if replay.size < warmup:
+                    if replay.size < warmup and learner.updates == 0:
                         # Small residual exploration around frozen SONIC, not uniform joint targets.
                         action = torch.randn(
                             env.worlds, env.spec["action_dim"], device=learner.device
@@ -152,6 +187,12 @@ def train(env, config, output, resume=None, warm_model=None):
                     replay_size=replay.size,
                     model_ready=learner.model_ready,
                 )
+                if stage is not None:
+                    metrics.update(
+                        curriculum_stage=stage["stage"],
+                        assistance_scale=stage["assistance_scale"],
+                        first_frame_probability=stage["first_frame_probability"],
+                    )
                 if learner.device.type == "cuda":
                     free, total = torch.cuda.mem_get_info(learner.device)
                     metrics.update(
@@ -173,6 +214,14 @@ def train(env, config, output, resume=None, warm_model=None):
                         / f"checkpoint_{previous_transitions + transitions:012d}.pt"
                     )
                     next_save += config.checkpoint_interval
+                cumulative = previous_transitions + transitions
+                if next_evaluation is not None and cumulative >= next_evaluation:
+                    checkpoint = output / f"evaluation_checkpoint_{cumulative:012d}.pt"
+                    save(checkpoint)
+                    evaluate_checkpoint(
+                        checkpoint, output / "milestones" / f"{cumulative:012d}"
+                    )
+                    next_evaluation += config.evaluation_interval
     except KeyboardInterrupt:
         stop_reason = "interrupted"
     except Exception:

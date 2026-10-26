@@ -645,11 +645,36 @@ and an early matched comparison, not that the native recipe has converged or
 failed to converge at its intended budget. The fixed-reference SONIC design is
 also used by CHORD and is not by itself evidence of an implementation error.
 
-For subsequent controlled tests, keep this native learner as the anchor. First
-test earlier deployment-start exposure and performance-gated assistance, with
-unassisted grasp/contact and stable whole-body behavior as the acceptance
-criteria. Separately test the corrected manipulation goals against a more
-conservative SONIC body reference; do not mix all changes into one experiment.
-Reintroduce a WM only when it can be shown to reduce time to the same physical
-outcome. The paused checkpoint SHA-256 remains
+Before changing the curriculum, run the native learner for its full intended
+budget. The 10M tests do not establish failure at 350M. Earlier deployment starts,
+performance-gated assistance and a conservative body reference remain possible
+later ablations, not fixes established by these short tests. Reintroduce a WM
+only when it reduces time to the same physical outcome. The paused checkpoint
+SHA-256 remains
 `c1177bee7d9ed7d9755861755c7f9575f18dd2e3aeced8746c3bba8811588776`.
+
+### Authorized full-budget pair, October 26
+
+The user authorized fresh Tier 1 episode-5 original and corrected policies,
+sequentially, with 349,999,104 training transitions **each** and a rolling replay
+capacity of 2M. Replay capacity is a learning-parameter departure from the native
+10M recipe; it is not the total training budget. Both use the native seed 42,
+2,048 worlds, batch 2,048, optimizer, rewards, resets, full-body action space,
+reference playback and unchanged assistance curriculum. There is no WM.
+
+The queue runs from `/root/autodl-tmp/v2d/native_full_20261026`, with results in
+`pair_t1_ep5`. The runner saves native actor and learner-state checkpoints every
+10,000,384 transitions and at the final step. It allows four hours of wall time
+per policy, retains the existing total-device-memory guard, and stops the queue
+if training or evaluation fails. The first policy's finished training allocations
+are released before native unassisted evaluation over sixteen worlds. Each
+policy also gets a bounded 1,100-frame native-viewer MP4; rendering errors are
+recorded without discarding a policy or cancelling the second training run.
+The viewer can restart failed episodes; quantitative evaluation does not reset
+within an attempt. Final errors remain against tier input references.
+
+The short-run throughput projects to about 2.2–2.3 training hours per policy;
+allow 5–6 hours for the pair including setup and evaluation. This is not a
+convergence guarantee. The old custom queue and all earlier artifacts remain
+preserved. The prepaid instance stays powered on. Scheduled summaries occur
+only at 00:00, 06:00, 12:00 and 18:00 America/New_York.

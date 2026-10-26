@@ -209,7 +209,11 @@ def run_child(args):
             "input_is_our_prepared_motion": True,
             "full_recipe_replay_capacity": 10000000,
             "full_recipe_transitions": 349999104,
-            "budget_note": "Truncated diagnostic; does not establish convergence.",
+            "budget_note": (
+                "Full native transition budget; reduced replay is a learning-parameter change."
+                if args.transitions == 349999104
+                else "Truncated diagnostic; does not establish convergence."
+            ),
         },
     )
     # The entry is imported to attach a local metric sink, so give Hydra its

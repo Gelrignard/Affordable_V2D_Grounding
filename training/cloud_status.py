@@ -88,6 +88,8 @@ def diagnostic_snapshot(root, relative, *, now, alive=None):
                 "assistance_scale": metric.get("curriculum/voc_scale"),
                 "evaluation": evaluation.get("metrics"),
                 "reference_tracking": evaluation.get("reference_tracking"),
+                "video": entry.get("video"),
+                "video_error": entry.get("video_error"),
             }
         )
         for name in ("status.json", "metrics.jsonl", "evaluation.json"):
@@ -104,10 +106,17 @@ def diagnostic_snapshot(root, relative, *, now, alive=None):
         "process_alive": running,
         "path": str(path),
         "activity_age_s": age,
-        "elapsed_s": queue.get("elapsed_s"),
+        "elapsed_s": (
+            max(0, now - datetime.fromisoformat(queue["started_utc"]).timestamp())
+            if state in ("running", "possibly_stalled") and queue.get("started_utc")
+            else queue.get("elapsed_s")
+        ),
         "error": queue.get("error"),
         "runs": runs,
         "metric_reference": queue.get("metric_reference"),
+        "transition_budget_per_policy": queue.get("transition_budget_per_policy"),
+        "replay_capacity": queue.get("replay_capacity"),
+        "planned_runs": queue.get("planned_runs"),
         "official_leaderboard_score": False,
     }
 

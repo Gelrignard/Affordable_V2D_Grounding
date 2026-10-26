@@ -399,3 +399,70 @@ python -m training plan --jobs outputs/training_jobs_v1 \
 python -m training batch --plan outputs/policy_full_two/plan.json \
   --runtime vendor/flash-runtime --max-jobs 4 --evaluate --device cuda:0
 ```
+
+## Convergence diagnosis, 2026-10-26
+
+The first full run (Tier 1, corrected episode 5) has not demonstrated successful
+manipulation. Inspection of saved physical traces changes the interpretation of
+the scalar error curve: center error falls from 0.5623 m at 35M transitions to
+0.4259 m at 140M, but the robot falls in every evaluated trace. At 140M its root
+height falls from 0.792 m to 0.089 m and the box ends at height 0.212 m, versus
+0.462 m initially. Contact occurs in only 1.79% of recorded frames. The reference
+root height stays between 0.630 and 0.810 m. These are input-reference diagnostics,
+not official leaderboard scores. Continued recording after tracking termination
+means a finite full-length output is not successful manipulation.
+
+`experiments/diagnose_policy_checkpoint.py` performs bounded inference-only
+diagnostics with no optimizer steps. The immutable 160M checkpoint was tested in
+four vector worlds: learned residuals, zero residuals, residuals scaled by 0.1,
+and finger-only residuals. All four eventually fell. With zero residuals, root
+height crossed below 0.35 m at 10.88 seconds; no hand/object contact occurred.
+This establishes that learned residuals alone do not explain the failure. It
+does not isolate the cause among reference preparation, reset, controller input,
+and task interaction. Different worlds can have different actuator delays, so
+this is a diagnostic intervention, not a repeated-seed causal benchmark.
+
+On fresh data collected with the checkpoint's 0.1 assistance scale, the WM's
+eight-step object-position error was 0.03375 m mean and 0.05181 m at the 90th
+percentile. Its weighted normalized state MSE was 0.268, below the readiness
+threshold of 1. This gate does not establish contact accuracy, useful action
+gradients, or accuracy under zero assistance. Raw compact evidence and the hash
+of the executed diagnostic script are in
+`experiments/policy_training_diagnosis_20261026.json`; full traces remain at
+`/root/autodl-tmp/v2d/diagnosis_20261026` on the cloud instance.
+
+The learner is an experimental SAC/WM hybrid, not a SuperMimic reproduction.
+Every collection of eight steps across 256 worlds adds eight SAC updates, four
+eight-step WM updates, and one eight-step imagined actor update when ready. It
+retains the full simulator budget, so the WM currently adds cost without a
+demonstrated wall-time reduction. SuperMimic instead trains its policy through
+longer differentiable model rollouts with an imagined-return value learner and
+shares a motion-conditioned model/policy across motions. No evidence collected
+here establishes a disconnected autograd graph or identifies a single optimizer
+bug. Predictive error alone cannot validate the model Jacobian used by the actor.
+
+Several deliberate changes also depart from the native FlashCHORD recipe:
+weaker body/palm reference weights, replacement of force closure by a custom
+wrench reward that is zero before contact, no settling freeze/reset assistance,
+relaxed termination thresholds, and timestamp-resampled reference playback.
+These differences need controlled validation; sharing the simulator and SONIC
+does not make this a baseline reproduction. The native action bound also permits
+large residuals, so that bound alone is not evidence of a coding error.
+
+The inspected [DexMachina source](https://github.com/MandiZhao/dexmachina/tree/adae5bf620c57723d185b2757ee3ce9656927c20)
+offers concrete mechanisms to borrow: `envs/curriculum.py` reduces assistance
+after reward/episode-length criteria and can dial it back after regression;
+`envs/rewards.py` supplies geometric approach guidance before contact forces
+appear; `envs/robot.py` uses bounded wrist residuals with joint-limited finger
+targets; `rl/train_rl_games.py` uses the existing vectorized PPO learner. Its
+floating-hand task and throughput are not direct G1/4090 performance promises.
+
+Recommended order before another long run: diagnose the zero-residual
+reference/reset/controller interaction; establish a faithful, memory-scaled
+FlashSAC downstream baseline on one episode; retain dense pre-contact guidance
+and assess assistance stages using unassisted behavior; only then test whether
+the WM reduces time to the same physical task outcome. Use early fall/contact/
+object-lift checks in addition to trajectory error, and compare learned versus
+zero residuals before expanding episode count or parallelism. The diagnosis
+does not isolate or reject the trajectory corrector's contribution. No training
+settings or queue contents were changed by these diagnostic runs.

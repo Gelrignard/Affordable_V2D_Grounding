@@ -124,6 +124,7 @@ def write_report(output, rows):
         "Tier",
         "Episode",
         *(label for _, label in METRICS),
+        "Transitions (M)",
         "Training (h)",
         "Worlds",
     ]
@@ -142,7 +143,15 @@ def write_report(output, rows):
         ]
         values += [
             "—" if row.get(k) is None else f"{row[k]:.4f}"
-            for k in [*(key for key, _ in METRICS), "training_hours"]
+            for k in [key for key, _ in METRICS]
+        ]
+        values += [
+            "—"
+            if row.get("transitions") is None
+            else f"{row['transitions'] / 1e6:.3f}",
+            "—"
+            if row.get("training_hours") is None
+            else f"{row['training_hours']:.4f}",
         ]
         values += [str(row.get("world_count") or "—")]
         lines.append("| " + " | ".join(values) + " |")

@@ -1,14 +1,19 @@
 # Policy training after trajectory correction
 
-This workstream implements one residual manipulation policy per episode using
-the Tier 1/2 handoff. Tier 3 reconstruction remains separate. Full-body physics,
-G1/Dex3 assets and frozen SONIC come from NVIDIA's pinned FlashCHORD runtime.
-Our learner is PyTorch; reproducing the full CHORD training recipe is not required.
+**Preserved CHORD baseline, 26 October 2026:** the current cloud baseline uses
+NVIDIA's native JAX FlashCHORD FlashSAC learner, full-body G1/Dex3 simulation,
+and frozen SONIC. `experiments/native_chord_diagnostic.py --method native` is
+the baseline entry point. It uses our prepared trajectories, a 2M rather than
+10M replay, and the pinned native runtime at
+`8c778f905cb35f76f8e6cd6e2ea486da4fb9e0ef`. This is CHORD downstream policy
+training, not a new SAC or SuperMimic implementation. The native 350M pair and
+subsequent explicitly labeled adaptive/wrench extensions have completed; their
+scores and limitations are recorded below. Tier 3 reconstruction is separate.
 
-**Status:** CPU learning tests, NVIDIA reference-loader integration on all 24
-prepared jobs, and submission-kit trajectory-reader integration pass. CUDA
-simulation, the container build, policy quality and 4090 performance remain to
-be checked on the cloud machine. No G1 policy has been trained yet.
+This version is preserved on `work/tier2-rl` before the user-authorized
+DexMachina-style experiments on a separate branch. Historical PyTorch SAC/WM
+code remains for reproducibility; its queue is paused and it is not the active
+baseline. The next section describes that earlier experimental pipeline.
 
 ## Implemented learning pipeline
 

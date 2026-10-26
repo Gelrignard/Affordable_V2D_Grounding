@@ -1,0 +1,405 @@
+{
+  "recorded_utc": "2026-10-26T16:47:22.195642+00:00",
+  "partial": false,
+  "state": "complete",
+  "specification": "experiments/chord_candidates_v1_20261026.json",
+  "implementation_commit": "8b6151a",
+  "scope": "Tier 1 episode 5 diagnostic pre-spline candidate, seed 42, 16 evaluation worlds",
+  "world_model": false,
+  "cloud_queue": "/root/autodl-tmp/v2d/native_candidates_20261026_v1/candidate_pair/queue_status.json",
+  "elapsed_queue_s": 2198.647456534207,
+  "rows": [
+    {
+      "tier": 1,
+      "episode": 5,
+      "variant": "native_corrected",
+      "add_auc": 0.11688761839481554,
+      "spider_sr": 0.0,
+      "maniptrans_sr": 0.0,
+      "mppe_cm": 68.99019756217022,
+      "world_count": 16,
+      "training_hours": 0.15664909083333334,
+      "transitions": 20000768,
+      "metric_reference": "tier1_input_reference",
+      "official_leaderboard_score": false,
+      "checkpoint_sha256": "c52b947f62bc61b2fdb788ea4e3f937c6e4a7db69502ec0d2655304e9caf3fbb"
+    },
+    {
+      "tier": 1,
+      "episode": 5,
+      "variant": "native_corrected",
+      "add_auc": 0.09768351196410768,
+      "spider_sr": 0.0,
+      "maniptrans_sr": 0.0,
+      "mppe_cm": 91.12420651071884,
+      "world_count": 16,
+      "training_hours": 0.28541019055555555,
+      "transitions": 40001536,
+      "metric_reference": "tier1_input_reference",
+      "official_leaderboard_score": false,
+      "checkpoint_sha256": "e3e94af9c4dc9f2713f2a0f3e3e7092a4ca665e408ece5a16d9472b2f3d5f4f2"
+    },
+    {
+      "tier": 1,
+      "episode": 5,
+      "variant": "native_corrected",
+      "add_auc": 0.14518553713858423,
+      "spider_sr": 0.0,
+      "maniptrans_sr": 0.0,
+      "mppe_cm": 61.929592930989116,
+      "world_count": 16,
+      "training_hours": 0.4151137230555556,
+      "transitions": 60002304,
+      "metric_reference": "tier1_input_reference",
+      "official_leaderboard_score": false,
+      "checkpoint_sha256": "09ca2ea720d301023aaaa76f4eae9e2cfd35796063a2cd370c9cd2d35c0191bf"
+    },
+    {
+      "tier": 1,
+      "episode": 5,
+      "variant": "adaptive",
+      "add_auc": 0.11555957128614158,
+      "spider_sr": 0.0,
+      "maniptrans_sr": 0.0,
+      "mppe_cm": 78.45937330507978,
+      "world_count": 16,
+      "training_hours": 0.09121682819185986,
+      "transitions": 10000384,
+      "metric_reference": "tier1_input_reference",
+      "official_leaderboard_score": false,
+      "checkpoint_sha256": "5957dd8317e1bf711b58bf08dc4cfbd2683718c16f199a74a1479e4364eb2faf"
+    },
+    {
+      "tier": 1,
+      "episode": 5,
+      "variant": "adaptive",
+      "add_auc": 0.16448311316051845,
+      "spider_sr": 0.0,
+      "maniptrans_sr": 0.0,
+      "mppe_cm": 42.09246566221965,
+      "world_count": 16,
+      "training_hours": 0.1552176640762223,
+      "transitions": 20000768,
+      "metric_reference": "tier1_input_reference",
+      "official_leaderboard_score": false,
+      "checkpoint_sha256": "776566a6cb871c3fcae7a845ef7da1cd476987be5a1376ce643a1c083648d6b2"
+    },
+    {
+      "tier": 1,
+      "episode": 5,
+      "variant": "adaptive",
+      "add_auc": 0.1105745264207378,
+      "spider_sr": 0.0,
+      "maniptrans_sr": 0.0,
+      "mppe_cm": 66.00185513459324,
+      "world_count": 16,
+      "training_hours": 0.21954990050445,
+      "transitions": 30001152,
+      "metric_reference": "tier1_input_reference",
+      "official_leaderboard_score": false,
+      "checkpoint_sha256": "10796d44f70cad997196ad1d2e56acf8ed74cc6a271bf9c4e7b2bab13f27eace"
+    },
+    {
+      "tier": 1,
+      "episode": 5,
+      "variant": "adaptive_wrench",
+      "add_auc": 0.10348641575274177,
+      "spider_sr": 0.0,
+      "maniptrans_sr": 0.0,
+      "mppe_cm": 73.22624022749594,
+      "world_count": 16,
+      "training_hours": 0.09120215119794012,
+      "transitions": 10000384,
+      "metric_reference": "tier1_input_reference",
+      "official_leaderboard_score": false,
+      "checkpoint_sha256": "112ed0c670ec4ed7a4b7e0bd9ecde6452a343430287d408cc357007ae0471e56"
+    },
+    {
+      "tier": 1,
+      "episode": 5,
+      "variant": "adaptive_wrench",
+      "add_auc": 0.15135842472582253,
+      "spider_sr": 0.0,
+      "maniptrans_sr": 0.0,
+      "mppe_cm": 40.62235852930847,
+      "world_count": 16,
+      "training_hours": 0.15479489718460374,
+      "transitions": 20000768,
+      "metric_reference": "tier1_input_reference",
+      "official_leaderboard_score": false,
+      "checkpoint_sha256": "60e161ce1277990734dce19d1f20cd6ad978802e1d739d325e0b20bf63da1a18"
+    },
+    {
+      "tier": 1,
+      "episode": 5,
+      "variant": "adaptive_wrench",
+      "add_auc": 0.11573093220338983,
+      "spider_sr": 0.0,
+      "maniptrans_sr": 0.0,
+      "mppe_cm": 47.07968405010931,
+      "world_count": 16,
+      "training_hours": 0.21866443417345485,
+      "transitions": 30001152,
+      "metric_reference": "tier1_input_reference",
+      "official_leaderboard_score": false,
+      "checkpoint_sha256": "1201822eea5e4c6833cf31796bed93f59c74e93d1241b34993cfac3ea7a42b5b"
+    }
+  ],
+  "candidate_outcomes": [
+    {
+      "variant": "adaptive",
+      "state": "stopped_at_stall_gate",
+      "transitions": 30001152,
+      "throughput": 43174.57770031537,
+      "assistance_scale": 1.0,
+      "peak_gpu_used_mib": 16564,
+      "training_elapsed_s": 790.37964181602,
+      "evaluation_elapsed_s": 260.80652126669884,
+      "decision": {
+        "transitions": 30001152,
+        "previous_stage": 0,
+        "stage": 0,
+        "probe_scale": 0.75,
+        "passed": false,
+        "reason": "probe_gate_not_met"
+      },
+      "leaderboard": {
+        "schema": "v2d_track2_local_leaderboard_v1",
+        "metric_source": "https://nvidia-isaac.github.io/video_to_data/v2d_challenge/",
+        "metric_order": [
+          "add_auc",
+          "spider_sr",
+          "maniptrans_sr",
+          "mppe_cm"
+        ],
+        "rate_scale": "0_to_1",
+        "mppe_unit": "cm",
+        "official_leaderboard_score": false,
+        "scope": "Listed episodes only; no competition rank or 30-episode aggregate is inferred.",
+        "auc_reference": "Local visible-mesh samples; the host's AUC sample set is not supplied.",
+        "rows": [
+          {
+            "tier": 1,
+            "episode": 5,
+            "variant": "adaptive",
+            "add_auc": 0.11555957128614158,
+            "spider_sr": 0.0,
+            "maniptrans_sr": 0.0,
+            "mppe_cm": 78.45937330507978,
+            "world_count": 16,
+            "training_hours": 0.09121682819185986,
+            "transitions": 10000384,
+            "metric_reference": "tier1_input_reference",
+            "official_leaderboard_score": false,
+            "checkpoint_sha256": "5957dd8317e1bf711b58bf08dc4cfbd2683718c16f199a74a1479e4364eb2faf"
+          },
+          {
+            "tier": 1,
+            "episode": 5,
+            "variant": "adaptive",
+            "add_auc": 0.16448311316051845,
+            "spider_sr": 0.0,
+            "maniptrans_sr": 0.0,
+            "mppe_cm": 42.09246566221965,
+            "world_count": 16,
+            "training_hours": 0.1552176640762223,
+            "transitions": 20000768,
+            "metric_reference": "tier1_input_reference",
+            "official_leaderboard_score": false,
+            "checkpoint_sha256": "776566a6cb871c3fcae7a845ef7da1cd476987be5a1376ce643a1c083648d6b2"
+          },
+          {
+            "tier": 1,
+            "episode": 5,
+            "variant": "adaptive",
+            "add_auc": 0.1105745264207378,
+            "spider_sr": 0.0,
+            "maniptrans_sr": 0.0,
+            "mppe_cm": 66.00185513459324,
+            "world_count": 16,
+            "training_hours": 0.21954990050445,
+            "transitions": 30001152,
+            "metric_reference": "tier1_input_reference",
+            "official_leaderboard_score": false,
+            "checkpoint_sha256": "10796d44f70cad997196ad1d2e56acf8ed74cc6a271bf9c4e7b2bab13f27eace"
+          }
+        ]
+      },
+      "latest_unassisted": {
+        "scores": {
+          "add_auc": 0.1105745264207378,
+          "spider_sr": 0.0,
+          "maniptrans_sr": 0.0,
+          "mppe_cm": 66.00185513459324
+        }
+      },
+      "reference_tracking": {
+        "failure_cause_fraction": {
+          "object": 1.0,
+          "palm": 1.0,
+          "pelvis": 1.0
+        },
+        "reference_end_fraction": 1.0,
+        "success_rate": 0.0
+      },
+      "physical_diagnostics": {
+        "active_phase_contact_fraction": 0.15464501082897186,
+        "wrench_deficit_mean": 0.21001453697681427,
+        "force_deficit_mean": 0.20802295207977295,
+        "torque_deficit_mean": 0.020048314705491066,
+        "reference_confidence_mean": 0.993983268737793
+      },
+      "probe_assistance": 0.75,
+      "probe_physical_diagnostics": {
+        "active_phase_contact_fraction": 0.5285120606422424,
+        "wrench_deficit_mean": 0.8950774669647217,
+        "force_deficit_mean": 0.8664290904998779,
+        "torque_deficit_mean": 0.15819068253040314,
+        "reference_confidence_mean": 0.993983268737793
+      },
+      "probe_reference_tracking": {
+        "failure_cause_fraction": {
+          "object": 0.8125,
+          "palm": 1.0,
+          "pelvis": 1.0
+        },
+        "reference_end_fraction": 1.0,
+        "success_rate": 0.0
+      }
+    },
+    {
+      "variant": "adaptive_wrench",
+      "state": "stopped_at_stall_gate",
+      "transitions": 30001152,
+      "throughput": 43567.91363566636,
+      "assistance_scale": 1.0,
+      "peak_gpu_used_mib": 16570,
+      "training_elapsed_s": 787.1919630244374,
+      "evaluation_elapsed_s": 260.67897794395685,
+      "decision": {
+        "transitions": 30001152,
+        "previous_stage": 0,
+        "stage": 0,
+        "probe_scale": 0.75,
+        "passed": false,
+        "reason": "probe_gate_not_met"
+      },
+      "leaderboard": {
+        "schema": "v2d_track2_local_leaderboard_v1",
+        "metric_source": "https://nvidia-isaac.github.io/video_to_data/v2d_challenge/",
+        "metric_order": [
+          "add_auc",
+          "spider_sr",
+          "maniptrans_sr",
+          "mppe_cm"
+        ],
+        "rate_scale": "0_to_1",
+        "mppe_unit": "cm",
+        "official_leaderboard_score": false,
+        "scope": "Listed episodes only; no competition rank or 30-episode aggregate is inferred.",
+        "auc_reference": "Local visible-mesh samples; the host's AUC sample set is not supplied.",
+        "rows": [
+          {
+            "tier": 1,
+            "episode": 5,
+            "variant": "adaptive_wrench",
+            "add_auc": 0.10348641575274177,
+            "spider_sr": 0.0,
+            "maniptrans_sr": 0.0,
+            "mppe_cm": 73.22624022749594,
+            "world_count": 16,
+            "training_hours": 0.09120215119794012,
+            "transitions": 10000384,
+            "metric_reference": "tier1_input_reference",
+            "official_leaderboard_score": false,
+            "checkpoint_sha256": "112ed0c670ec4ed7a4b7e0bd9ecde6452a343430287d408cc357007ae0471e56"
+          },
+          {
+            "tier": 1,
+            "episode": 5,
+            "variant": "adaptive_wrench",
+            "add_auc": 0.15135842472582253,
+            "spider_sr": 0.0,
+            "maniptrans_sr": 0.0,
+            "mppe_cm": 40.62235852930847,
+            "world_count": 16,
+            "training_hours": 0.15479489718460374,
+            "transitions": 20000768,
+            "metric_reference": "tier1_input_reference",
+            "official_leaderboard_score": false,
+            "checkpoint_sha256": "60e161ce1277990734dce19d1f20cd6ad978802e1d739d325e0b20bf63da1a18"
+          },
+          {
+            "tier": 1,
+            "episode": 5,
+            "variant": "adaptive_wrench",
+            "add_auc": 0.11573093220338983,
+            "spider_sr": 0.0,
+            "maniptrans_sr": 0.0,
+            "mppe_cm": 47.07968405010931,
+            "world_count": 16,
+            "training_hours": 0.21866443417345485,
+            "transitions": 30001152,
+            "metric_reference": "tier1_input_reference",
+            "official_leaderboard_score": false,
+            "checkpoint_sha256": "1201822eea5e4c6833cf31796bed93f59c74e93d1241b34993cfac3ea7a42b5b"
+          }
+        ]
+      },
+      "latest_unassisted": {
+        "scores": {
+          "add_auc": 0.11573093220338983,
+          "spider_sr": 0.0,
+          "maniptrans_sr": 0.0,
+          "mppe_cm": 47.07968405010931
+        }
+      },
+      "reference_tracking": {
+        "failure_cause_fraction": {
+          "object": 1.0,
+          "palm": 1.0,
+          "pelvis": 1.0
+        },
+        "reference_end_fraction": 1.0,
+        "success_rate": 0.0
+      },
+      "physical_diagnostics": {
+        "active_phase_contact_fraction": 0.19920694828033447,
+        "wrench_deficit_mean": 0.2817115783691406,
+        "force_deficit_mean": 0.27884697914123535,
+        "torque_deficit_mean": 0.02784230001270771,
+        "reference_confidence_mean": 0.993983268737793
+      },
+      "probe_assistance": 0.75,
+      "probe_physical_diagnostics": {
+        "active_phase_contact_fraction": 0.47129908204078674,
+        "wrench_deficit_mean": 0.9740803241729736,
+        "force_deficit_mean": 0.9275820255279541,
+        "torque_deficit_mean": 0.20861628651618958,
+        "reference_confidence_mean": 0.993983268737793
+      },
+      "probe_reference_tracking": {
+        "failure_cause_fraction": {
+          "object": 1.0,
+          "palm": 1.0,
+          "pelvis": 1.0
+        },
+        "reference_end_fraction": 1.0,
+        "success_rate": 0.0
+      }
+    }
+  ],
+  "configuration_and_input_audit": "experiments/chord_configuration_input_audit_20261026.json",
+  "conclusions": [
+    "Both candidates stopped at 30001152 transitions without an accepted curriculum advance; this is the planned stop, not a crash.",
+    "Both trained at assistance scale 1.0; failed scale-0.75 probes did not advance the curriculum. Reported scores are separate zero-assistance cohorts.",
+    "At matched 20M transitions, both candidates improved AUC and MPPE over the saved native checkpoint, but SP-SR and MP-SR stayed zero.",
+    "Both candidates regressed from their 20M to their 30M evaluations. Neither established successful manipulation or a convergence speedup.",
+    "The 30M wrench candidate improves terminal AUC and MPPE over adaptive-only in one seed. This is not a general superiority claim.",
+    "The pre-spline input and native 50Hz source-frame playback must be made explicit before comparison with the correction replay."
+  ],
+  "official_leaderboard_score": false,
+  "metric_reference": "tier1_input_reference",
+  "monitor_paused": true,
+  "instance_kept_powered_on": true
+}

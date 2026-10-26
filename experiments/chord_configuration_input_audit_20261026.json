@@ -1,0 +1,227 @@
+{
+  "recorded_utc": "2026-10-26T16:47:22.195642+00:00",
+  "source_config_snapshot": "outputs/cloud/chord_candidates_v1/config_audit_source.json",
+  "runtime_commit": "8c778f905cb35f76f8e6cd6e2ea486da4fb9e0ef",
+  "checked_cloud_runs": {
+    "native_original": {
+      "path": "/root/autodl-tmp/v2d/native_full_20261026/pair_t1_ep5/original",
+      "training_config_sha256": "0d181c6830d5a3ff344788660080fbd4fe6cf39da411b611de4b1504c8c10462",
+      "environment_config_sha256": "9310e5ad3b24eafa0f2dc4138c0a68e701eadadf33b52de75e1b59166f8828ca",
+      "training_budget": 349999104,
+      "reference": {
+        "parquet": "/root/autodl-tmp/v2d/native_full_20261026/pair_t1_ep5/original/input/retargeted/sequence_id=2026-03-18_19-36-56_g1_box_rotate_01/robot_name=g1/motion.parquet",
+        "num_frames": 1003,
+        "playback_fps": 50.0,
+        "object_articulations": {
+          "version": 1,
+          "entries": []
+        }
+      }
+    },
+    "native_corrected": {
+      "path": "/root/autodl-tmp/v2d/native_full_20261026/pair_t1_ep5/corrected",
+      "training_config_sha256": "0d181c6830d5a3ff344788660080fbd4fe6cf39da411b611de4b1504c8c10462",
+      "environment_config_sha256": "694a598fac49d2d93204fcad4b54d06669ec809d176da6e521c532f6fbafa5d8",
+      "training_budget": 349999104,
+      "reference": {
+        "parquet": "/root/autodl-tmp/v2d/native_full_20261026/pair_t1_ep5/corrected/input/retargeted/sequence_id=2026-03-18_19-36-56_g1_box_rotate_01/robot_name=g1/motion.parquet",
+        "num_frames": 1003,
+        "playback_fps": 50.0,
+        "object_articulations": {
+          "version": 1,
+          "entries": []
+        }
+      }
+    },
+    "adaptive": {
+      "path": "/root/autodl-tmp/v2d/native_candidates_20261026_v1/candidate_pair/adaptive",
+      "training_config_sha256": "030b0cdaf51367821af121edb6131cade5cf700bd95e70aa27d504363d9319f9",
+      "environment_config_sha256": "12231abb62473a43658af9c63a72b49944de7090cc6aeaac2e7c71ef9832d964",
+      "training_budget": 60002304,
+      "reference": {
+        "parquet": "/root/autodl-tmp/v2d/native_candidates_20261026_v1/candidate_pair/adaptive/input/retargeted/sequence_id=2026-03-18_19-36-56_g1_box_rotate_01/robot_name=g1/motion.parquet",
+        "num_frames": 1003,
+        "playback_fps": 50.0,
+        "object_articulations": {
+          "version": 1,
+          "entries": []
+        }
+      }
+    },
+    "adaptive_wrench": {
+      "path": "/root/autodl-tmp/v2d/native_candidates_20261026_v1/candidate_pair/adaptive_wrench",
+      "training_config_sha256": "e0af91526a3cb6d8aebfeff6226e1e90ef5450d01d41b3322e0dd6548e11bca0",
+      "environment_config_sha256": "90972e4acdf9f9339845f0746080ebc65d723d1d4639d5708aed3654bcc920ce",
+      "training_budget": 60002304,
+      "reference": {
+        "parquet": "/root/autodl-tmp/v2d/native_candidates_20261026_v1/candidate_pair/adaptive_wrench/input/retargeted/sequence_id=2026-03-18_19-36-56_g1_box_rotate_01/robot_name=g1/motion.parquet",
+        "num_frames": 1003,
+        "playback_fps": 50.0,
+        "object_articulations": {
+          "version": 1,
+          "entries": []
+        }
+      }
+    }
+  },
+  "common_optimization": {
+    "learning_rate_initial": 0.0003,
+    "learning_rate_peak": 0.0003,
+    "learning_rate_end": 0.00015,
+    "warmup_fraction": 1e-06,
+    "decay_fraction": 1.0,
+    "adam_beta1": 0.9,
+    "adam_beta2": 0.999,
+    "adam_epsilon": 1e-08,
+    "loss_scale_initial": 65536.0,
+    "loss_scale_growth_factor": 2.0,
+    "loss_scale_backoff_factor": 0.5,
+    "loss_scale_growth_interval": 2000,
+    "actor_update_period": 2,
+    "actor_learning_rate_multiplier": 1.0,
+    "residual_mean_learning_rate_multiplier": 1.0,
+    "behavior_cloning_coefficient": 0.0,
+    "target_tau": 0.01,
+    "learning_rate_schedule_updates": 683592
+  },
+  "common_updates_per_collection": 4.0,
+  "common_worlds": 2048,
+  "common_seed": 42,
+  "common_replay": {
+    "capacity": 2000000,
+    "minimum_size": 409600,
+    "batch_size": 2048,
+    "n_step": 7,
+    "sampling": "uniform",
+    "clear_on_stage_change": false,
+    "observation_storage_dtype": "float16"
+  },
+  "common_simulation": {
+    "_target_": "flash_chord.runtime.sim.SimConfig",
+    "fps": 50.0,
+    "substeps": 4,
+    "solver": "newton",
+    "integrator": "implicitfast",
+    "cone": "pyramidal",
+    "njmax": 1024,
+    "nconmax": 512,
+    "impratio": 1.0,
+    "iterations": 100,
+    "ls_iterations": 50,
+    "use_mujoco_contacts": true
+  },
+  "common_action": {
+    "_target_": "flash_chord.runtime.actions.SonicJointResidualActionConfig",
+    "residual_joint_names": [
+      "left_hip_pitch_joint",
+      "right_hip_pitch_joint",
+      "waist_yaw_joint",
+      "left_hip_roll_joint",
+      "right_hip_roll_joint",
+      "waist_roll_joint",
+      "left_hip_yaw_joint",
+      "right_hip_yaw_joint",
+      "waist_pitch_joint",
+      "left_knee_joint",
+      "right_knee_joint",
+      "left_shoulder_pitch_joint",
+      "right_shoulder_pitch_joint",
+      "left_ankle_pitch_joint",
+      "right_ankle_pitch_joint",
+      "left_shoulder_roll_joint",
+      "right_shoulder_roll_joint",
+      "left_ankle_roll_joint",
+      "right_ankle_roll_joint",
+      "left_shoulder_yaw_joint",
+      "right_shoulder_yaw_joint",
+      "left_elbow_joint",
+      "right_elbow_joint",
+      "left_wrist_roll_joint",
+      "right_wrist_roll_joint",
+      "left_wrist_pitch_joint",
+      "right_wrist_pitch_joint",
+      "left_wrist_yaw_joint",
+      "right_wrist_yaw_joint"
+    ],
+    "residual_scale": 0.15,
+    "finger_residual_scale": 0.15,
+    "use_tanh": false,
+    "body_delay": {
+      "_target_": "flash_chord.runtime.delay.TargetDelayConfig",
+      "min_steps": 0,
+      "max_steps": 2,
+      "seed": 0
+    },
+    "enable_cuda_graph": true,
+    "input_mode": "raw",
+    "normalized_mapping": "linear"
+  },
+  "common_policy_network": {
+    "actor_blocks": 2,
+    "actor_hidden_dim": 256,
+    "actor_head_mode": "residual",
+    "residual_mean_head": "zero_dense",
+    "initial_normalized_std": 0.05,
+    "action_transform": "tanh",
+    "action_scale": 10.0,
+    "critic_blocks": 2,
+    "critic_hidden_dim": 512,
+    "expansion": 4,
+    "critic_count": 2,
+    "atom_count": 101,
+    "log_std_min": -12.302585092994047,
+    "log_std_max": -0.3025850929940459,
+    "batch_norm_update_rate": 0.01,
+    "batch_norm_epsilon": 1e-05,
+    "rms_norm_epsilon": 1e-06,
+    "projection_epsilon": 1e-08
+  },
+  "changed_from_published_native_recipe": [
+    "Replay capacity 2M instead of 10M.",
+    "Our prepared retargeting/correction inputs replace NVIDIA retargeted inputs.",
+    "Candidates use adaptive assistance, earlier frame-zero starts, and a 60M cap/30M no-advance stop.",
+    "Only adaptive_wrench adds the dynamics reward."
+  ],
+  "learning_rate_note": "Both full native runs and both truncated candidates keep the 349999104-transition (683592-update) horizon; the 30M result is not a fully annealed short run.",
+  "input_provenance": {
+    "tier": 1,
+    "episode_index": 5,
+    "sequence_id": "2026-03-18_19-36-56_g1_box_rotate_01",
+    "source_frames": 1003,
+    "source_fps": 29.999998629450147,
+    "source_manifest_sha256": "201f547c33b95438202c4c7e4db1e5d988efaf3be8c91b05a49bae9a9d13af25",
+    "reference_kind": "diagnostic_pre_spline_candidate",
+    "physical_accepted": false,
+    "usage": "soft_reference_not_expert_actions",
+    "actual_job_hashes": {
+      "motion.parquet": "590b73a14891c267ae1b1e48c6fa6e574fbf912b868b1ec48f8b9e3c5f3a267b",
+      "reference.npz": "4bc498f0c7050e5f014834f7463e93699ef2de04a494c408fcbfa81ce59720d9"
+    },
+    "verified_source_manifest": "correction/outputs/rl_pilot_handoff_20261024/tier1/episode_000005/manifest.json",
+    "interpretation": "The cloud reference is the automatic pre-spline diagnostic candidate. It cannot be described as a physically accepted corrected demonstration. The specific replay viewed by the user has not been identified from this message."
+  },
+  "playback_audit": {
+    "source_duration_s": 33.400001525878906,
+    "runtime_duration_s": 20.04,
+    "source_frame_playback": true,
+    "runtime_control_fps": 50.0,
+    "effective_speed_ratio": 1.6666667428083286,
+    "origin": "Unchanged native G1 CHORD source-frame-playback setting. Source frames are not resampled and lifecycle advances one frame per control step.",
+    "causality": "Verified timing difference relative to original timestamps; contribution to learning failure has not been measured.",
+    "code_evidence": [
+      "flash_chord/configs/experiment/g1_recon_body_flash_sac.yaml",
+      "flash_chord/data/motion_v1.py:273-312",
+      "flash_chord/envs/base.py:55-67",
+      "flash_chord/runtime/actions/sonic.py:222-233"
+    ]
+  },
+  "replay_comparison_limits": [
+    "The upstream correction replay uses a supported pelvis and observed-force controller; position-reference import does not include that feedback controller.",
+    "Need to identify the same input artifact and match timing, support, control, and scoring before attributing replay-to-policy degradation to an optimizer."
+  ],
+  "proposed_next_controlled_check": "Establish exact artifact/controller/timing parity and a zero-learned-residual physical baseline. Then isolate DexMachina-style action priors and reward/episode-completion curriculum with recovery, leaving optimizer comparisons separate. No new experiment launched by this audit.",
+  "dexmachina_sources": [
+    "https://arxiv.org/html/2505.24853v1",
+    "https://github.com/MandiZhao/dexmachina/blob/main/dexmachina/envs/curriculum.py"
+  ]
+}

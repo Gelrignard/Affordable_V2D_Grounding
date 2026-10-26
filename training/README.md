@@ -799,9 +799,11 @@ The bounded pair was launched from commit `8b6151a` in
 `/root/autodl-tmp/v2d/native_candidates_20261026_v1`. Its immutable source snapshot
 is under `candidate_pair/executed_source`; logs and outcomes remain alongside it.
 The read-only endpoint exposes `candidate_training` separately from the paused
-custom queue and completed native baseline. Scheduled summaries remain at
-00:00, 06:00, 12:00 and 18:00 New York time, with no intervening checks. A planned
-stall-gate stop is recorded as a scientific outcome rather than a queue crash.
+custom queue and completed native baseline. Summaries ran at 00:00, 06:00,
+12:00 and 18:00 New York time without intervening checks. The monitor is now
+paused after both terminal candidate outcomes were reported. The prepaid
+instance remains powered on. A planned stall-gate stop is recorded as a
+scientific outcome rather than a queue crash.
 
 Keep native CHORD, frozen SONIC and all body/finger residuals. First isolate a
 DexMachina-inspired competence-based assistance curriculum, then add a robust
@@ -810,3 +812,56 @@ joint trajectories remain soft priors. Check native PPO against FlashSAC only
 with a shared environment/reward/curriculum contract. An optional shared compact
 WM must pass contact-transition, gradient and total-cost tests before affecting
 the policy. It does not justify resuming the old per-episode full-state WM queue.
+
+## Completed candidates and input/configuration audit (26 October)
+
+Both candidates stopped at the planned 30,001,152-transition limit without a
+curriculum advance. Training assistance remained 1.0; the separate 0.75-assistance
+probes failed the gate, including pelvis-reference tracking in all 16 worlds.
+That tracking failure is not itself a measurement of falling. The numbers below
+are the separate full, zero-assistance evaluations:
+
+| Method at 30M transitions | AUC ↑ | SP-SR ↑ | MP-SR ↑ | MPPE (cm) ↓ | Training (min) | Evaluation (min) |
+|---|---|---|---|---|---|---|
+| Adaptive curriculum | 0.1106 | 0.0000 | 0.0000 | 66.0019 | 13.17 | 4.35 |
+| Adaptive plus wrench | 0.1157 | 0.0000 | 0.0000 | 47.0797 | 13.12 | 4.34 |
+
+The queue, including baseline-checkpoint scoring and setup, took 36.64 minutes.
+At matched 20M transitions, the native checkpoint had AUC 0.1169 and MPPE
+68.9902 cm; adaptive had 0.1645 / 42.0925 cm and adaptive plus wrench had
+0.1514 / 40.6224 cm. Both candidates regressed at 30M, and all success rates
+remained zero. This establishes neither successful control nor a convergence
+speedup. Full rows, timings and terminal diagnostics are preserved in
+`experiments/chord_candidates_v1_final_results_20261026.json`.
+
+The audit of all four cloud-saved configurations (the earlier native 350M pair
+and these two candidates) confirms identical optimizer, network, action and
+simulation settings. Learning rate is 3e-4 to 1.5e-4 over the unchanged native
+350M horizon, with four updates per collection and an actor update every second
+optimizer update. Control is 50 Hz with four physics substeps. Replay capacity
+is 2M rather than the native recipe's 10M. The candidates additionally change
+the curriculum, early frame-zero starts and stopping rule; only the wrench
+candidate changes the objective. No world model or PPO was used.
+
+Two input-contract findings limit the comparison with correction replay:
+
+- The hash-verified cloud input is Tier 1 episode 5, box rotation, from the
+  automatic October 24 bundle. Its manifest labels it
+  `diagnostic_pre_spline_candidate`, with `physical_accepted: false`. The word
+  "corrected" in the result tables denotes that variant; it must not imply a
+  physically accepted optimized demonstration. The specific replay the user
+  viewed has not been identified from the current message.
+- Native G1 `source_frame_playback: true` preserves all 1003 source frames but
+  consumes one per 50 Hz control step. The source timestamps span 33.40 seconds
+  at 30 Hz, while the training reference spans 20.04 seconds. This native
+  setting therefore changes physical timing relative to the correction replay;
+  its contribution to learning failure has not been measured. SONIC reference
+  velocities also use the 50 Hz playback rate.
+
+The correction replay additionally uses a supported pelvis and observed-force
+feedback; importing position references does not transfer that controller.
+Before another learner comparison, identify the same artifact and establish
+timing, support, controller and scoring parity with a zero-learned-residual
+physical baseline. This audit did not launch further training or alter any
+executed experiment. Evidence and configuration hashes are in
+`experiments/chord_configuration_input_audit_20261026.json`.

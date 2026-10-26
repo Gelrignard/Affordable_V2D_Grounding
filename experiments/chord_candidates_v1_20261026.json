@@ -1,0 +1,60 @@
+{
+  "status": "implemented_integration_verified_ready_for_bounded_pair",
+  "authorization": "User: implement the plan and see the results, 2026-10-26",
+  "runtime_commit": "8c778f905cb35f76f8e6cd6e2ea486da4fb9e0ef",
+  "tier": 1,
+  "episode": 5,
+  "input": "our contact-aware corrected trajectory",
+  "seed": 42,
+  "learner": "native CHORD FlashSAC, frozen SONIC, all body and finger residuals",
+  "world_model": false,
+  "worlds": 2048,
+  "batch_size": 2048,
+  "replay_capacity": 2000000,
+  "maximum_transitions_per_candidate": 60002304,
+  "checkpoint_interval": 10000384,
+  "stall_without_curriculum_advance_transitions": 30001152,
+  "maximum_wall_seconds_per_candidate_including_evaluation": 5400,
+  "memory_guard_total_gpu_mib": 23000,
+  "evaluation_worlds": 16,
+  "candidates": [
+    {"method": "adaptive", "dynamics_weight": 0.0},
+    {"method": "adaptive_wrench", "dynamics_weight": 1.0}
+  ],
+  "baseline": {
+    "source": "/root/autodl-tmp/v2d/native_full_20261026/pair_t1_ep5",
+    "variant": "corrected",
+    "existing_checkpoint_steps": [20000768, 40001536, 60002304],
+    "retrain": false,
+    "terminal_comparison": "Preserve and show 349999104-transition result separately"
+  },
+  "adaptive_changes": {
+    "voc_scales": [1, 0.75, 0.5, 0.25, 0.1, 0.05, 0],
+    "first_frame_start_probabilities": [0.1, 0.1, 0.1, 0.1, 0.25, 0.25, 0.5],
+    "advance": "At checkpoint, evaluate next lower assistance from frame zero over the full reference; require object mean error <=0.15m and <=0.8rad, pelvis tracking failure <=0.25, measured hand-force contact in >=0.20 of reference-contact frames, normalized wrench deficit <=1.25, and no nonfinite world.",
+    "unassisted": "Separate full-reference zero-assistance cohort at every checkpoint; no in-attempt resets",
+    "stall": "Stop and retain the just-saved checkpoint; never force a reduction and call it competence"
+  },
+  "dynamics_changes": {
+    "target": "11-frame cubic Savitzky-Golay object COM acceleration and rotation-derived angular velocity/acceleration; use simulator mass, COM, inertia",
+    "reference_uncertainty": "11 versus 21-frame derivative discrepancy; confidence is heuristic, not calibrated",
+    "measured": "Sum physical solver hand-object and non-hand-object contact wrenches about actual COM; subtract non-hand support from required wrench; exclude virtual assistance",
+    "normalization": "force divided by mg; torque by mg times object bounding radius",
+    "reward": "confidence * exp(-(sqrt(1+deficit^2)-1)), robust-loss exponent capped at 20; preserve every native reward",
+    "constraints": "Actual simulator contacts enforce unilateral/friction/actuator constraints; no new contact QP or feasibility certificate",
+    "scope": "Single rigid object with identical object mass/inertia across worlds, matching this native recipe"
+  },
+  "reporting": {
+    "primary": ["AUC", "SP-SR", "MP-SR", "MPPE_cm"],
+    "missing": "unavailable, never zero",
+    "invalid_world": "invalidate aggregate rather than drop failed world",
+    "verify": "Recompute all four from saved poses and exact local mesh samples at every evaluation",
+    "preserve": ["policy", "optimizer_state", "counters", "raw_rollouts", "mesh_samples", "physical_diagnostics", "configs", "source", "logs"],
+    "reference": "tier1_input_reference, local vertex sample set, not official leaderboard ground truth",
+    "cost": "Report training and evaluation separately and include both in end-to-end cost; disclose integration/baseline-evaluation overhead"
+  },
+  "not_enabled_in_this_ablation": ["PPO switch", "world model", "learned phase-state bank", "confidence-based joint-prior reweighting"],
+  "cloud_release": "/root/autodl-tmp/v2d/native_candidates_20261026_v1",
+  "old_custom_queue": "remains paused",
+  "instance": "keep powered on"
+}

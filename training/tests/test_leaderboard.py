@@ -38,6 +38,14 @@ class LeaderboardTests(unittest.TestCase):
         self.assertIsNone(leaderboard_scores({"mppe_cm": 20})["mppe_cm"])
 
     def test_missing_invalid_and_zero_are_distinct(self):
+        self.assertTrue(
+            all(
+                value is None
+                for value in leaderboard_scores(
+                    {"non_finite_worlds": [0], "metrics": {"spider_sr_uncentered": 1.0}}
+                ).values()
+            )
+        )
         scores = leaderboard_scores(
             {"add_auc": float("nan"), "spider_sr": 0, "maniptrans_sr": 2, "mppe_cm": -1}
         )

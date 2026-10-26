@@ -118,11 +118,28 @@ def run_child(args):
         "logging.upload_checkpoints=false",
         "logging.upload_training_state=false",
     ]
+    extension = None
+    if args.method != "native":
+        from training.native_experiment import NativeExperiment
+
+        extension = NativeExperiment(args, out)
+        overrides += [
+            "objective._target_=training.native_guidance.DynamicsObjectiveConfig",
+            f"+objective.dynamics_weight={args.dynamics_weight}",
+        ]
+        overrides += [
+            f"+curriculum.stages.{index}.objective_weights.dynamics_wrench={args.dynamics_weight}"
+            for index in range(9)
+        ]
     entry = source.parent / "scripts/train_flash_sac.py"
     spec = importlib.util.spec_from_file_location("native_flash_chord_entry", entry)
     native = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = native
     spec.loader.exec_module(native)
+    if extension is not None:
+        from training.native_guidance import GuidedRLEnv
+
+        native.RLEnv = GuidedRLEnv
 
     class LocalMetrics:
         def __init__(self, config, **kwargs):
@@ -131,11 +148,17 @@ def run_child(args):
             write_json(out / "environment_config.json", kwargs["environment_config"])
 
         def log(self, metrics, step):
+            if extension is not None:
+                extension.log(metrics, step)
             record = {"time_utc": utc_now(), "transitions": step, **metrics}
             self.stream.write(json.dumps(record, allow_nan=False) + "\n")
 
         def close(self):
             self.stream.close()
+
+        def log_checkpoint(self, paths, **kwargs):
+            if extension is not None:
+                extension.log_checkpoint(paths, **kwargs)
 
     native.WandbLogger = LocalMetrics
     original_run = native.run_training
@@ -175,6 +198,8 @@ def run_child(args):
             raise MemoryError(
                 "Replay preflight exceeds guard with 2.5x replay plus 4 GiB workspace allowance"
             )
+        if extension is not None:
+            config = extension.bind(env, config)
         return original_run(env, config, **kwargs)
 
     native.run_training = recorded_run
@@ -192,8 +217,23 @@ def run_child(args):
             "materialized_motion_sha256": sha256(motion),
             "overrides": overrides,
             "learner": "native_flash_chord_flash_sac",
-            "logger_only_replacement": True,
+            "logger_only_replacement": extension is None,
+            "method": args.method,
+            "dynamics_weight": args.dynamics_weight,
             "harness_sha256": sha256(__file__),
+            "extension_source_sha256": {
+                name: sha256(Path(__file__).resolve().parents[1] / "training" / name)
+                for name in (
+                    "adaptive_chord.py",
+                    "dynamics_targets.py",
+                    "native_guidance.py",
+                    "native_experiment.py",
+                    "leaderboard.py",
+                    "leaderboard_metrics.py",
+                )
+            }
+            if extension is not None
+            else {},
             "versions": {
                 package: importlib.metadata.version(package)
                 for package in (
@@ -224,7 +264,15 @@ def run_child(args):
         str(source / "flash_chord/configs"),
         *overrides,
     ]
-    native.main()
+    if extension is None:
+        native.main()
+    else:
+        from training.native_experiment import CandidateStalled
+
+        try:
+            native.main()
+        except CandidateStalled as error:
+            print(f"Controlled candidate stop: {error}", flush=True)
 
 
 def supervise(args):
@@ -331,10 +379,20 @@ def main():
     parser.add_argument("--checkpoint-interval", type=int, default=2000896)
     parser.add_argument("--memory-limit-mib", type=int, default=21504)
     parser.add_argument("--max-seconds", type=int, default=1800)
+    parser.add_argument(
+        "--method", choices=("native", "adaptive", "adaptive_wrench"), default="native"
+    )
+    parser.add_argument("--dynamics-weight", type=float, default=0.0)
+    parser.add_argument("--evaluation-worlds", type=int, default=16)
+    parser.add_argument("--stall-transitions", type=int, default=30001152)
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.transitions % args.worlds:
         parser.error("transition budget must be divisible by world count")
+    if args.method == "adaptive" and args.dynamics_weight != 0:
+        parser.error("adaptive control must have zero dynamics weight")
+    if args.method == "adaptive_wrench" and args.dynamics_weight <= 0:
+        parser.error("adaptive_wrench requires a positive dynamics weight")
     if args.child:
         run_child(args)
     else:

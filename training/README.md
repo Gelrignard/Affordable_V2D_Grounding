@@ -754,11 +754,45 @@ with exactly its local sample set. A nonfinite world invalidates the local cohor
 score rather than being silently discarded. Tier input references remain distinct
 from the clean references used by official scoring.
 
-## Proposed next learner
+## Native CHORD extension tests (26 October)
 
 The structured design and controlled test sequence are in
-`experiments/chord_dynamics_training_proposal_20261026.json`. It is a proposal;
-no new training or WM fitting has been launched.
+`experiments/chord_dynamics_training_proposal_20261026.json`. Its first controlled
+implementation is `experiments/chord_candidates_v1_20261026.json` and
+`experiments/run_chord_candidates.py`. The user authorized implementation and
+bounded comparisons. The old custom SAC/WM queue remains paused.
+
+Two fresh seed-42 policies use corrected Tier 1 episode 5: adaptive curriculum
+alone and the same curriculum plus a measured object-wrench reward. Native
+FlashSAC, frozen SONIC, all residuals, optimizer horizon, and native rewards are
+preserved. Each uses 2048 worlds, batch 2048, a 2M replay, at most 60,002,304
+transitions, and a 30,001,152-transition stall gate. The adaptive condition also
+introduces prescribed frame-zero starts earlier; it is a curriculum package,
+not an isolated assistance-only ablation. Existing native checkpoints supply
+the baseline curve without new baseline training.
+
+Every 10,000,384 transitions, save policy and optimizer state, then run a full
+16-world unassisted evaluation and a separate next-lower-assistance probe.
+Only the physical probe gate advances assistance; assisted reward is never the
+gate. All four metrics are independently recomputed from the saved poses and
+local mesh samples before publication. Positive-assistance probes never write
+a leaderboard table. Missing/invalid scores remain unavailable. Checkpoints
+do not include the replay buffer, so they are not bit-exact resume snapshots.
+
+The wrench term uses smoothed object-COM dynamics and actual simulator inertia,
+subtracts measured non-hand support, and measures the remaining hand wrench.
+Virtual object forces are excluded. Contact friction and actuator limits come
+from the simulator. Grasp contact presence sums individual force magnitudes,
+so opposing finger forces do not cancel out the engagement indicator. This
+version scores realized wrench; it does not solve a new contact-force QP or
+certify the corrected trajectory. The native reward terms stay unchanged.
+
+An integration run verified training, saving, unassisted/probe evaluation and
+independent scoring within 16.2 GiB total GPU memory. CPU tests exercise force
+reaction signs, torque about the COM, gravity supported by the floor, quaternion
+sign invariance and the curriculum gate. Learning results are reported
+separately from these implementation checks. PPO, a phase-state bank, joint
+prior reweighting and the optional WM are not enabled in this initial ablation.
 
 Keep native CHORD, frozen SONIC and all body/finger residuals. First isolate a
 DexMachina-inspired competence-based assistance curriculum, then add a robust

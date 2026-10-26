@@ -32,6 +32,8 @@ def leaderboard_scores(evaluation):
     Prefer mean_per_point_error_cm and only fall back for a verified single body.
     """
     evaluation = evaluation or {}
+    if evaluation.get("non_finite_worlds"):
+        return dict.fromkeys(key for key, _ in METRICS)
     metrics = evaluation.get("metrics") or evaluation.get("evaluation") or evaluation
     if evaluation.get("leaderboard"):
         metrics = evaluation["leaderboard"]["scores"]

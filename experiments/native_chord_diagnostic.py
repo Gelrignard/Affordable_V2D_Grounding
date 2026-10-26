@@ -45,6 +45,19 @@ def gpu_memory():
     return {"used_mib": used, "total_mib": total, "utilization_percent": utilization}
 
 
+def validate_replay_only_change(previous, current):
+    """Require the fresh comparison to change only rolling replay capacity."""
+    old, new = (json.loads(json.dumps(c)) for c in (previous, current))
+    capacities = [c["replay"].pop("capacity") for c in (old, new)]
+    if old != new:
+        raise ValueError("Comparison changes learner parameters beyond replay capacity")
+    return {
+        "previous_capacity": capacities[0],
+        "current_capacity": capacities[1],
+        "all_other_learner_parameters_identical": True,
+    }
+
+
 def run_child(args):
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -76,6 +89,13 @@ def run_child(args):
         )
     job = Path(args.job).resolve()
     out = Path(args.output).resolve()
+    supervisor_started = datetime.datetime.fromisoformat(
+        json.loads((out / "status.json").read_text())["started_utc"]
+    )
+    started = (
+        time.monotonic()
+        - (datetime.datetime.now(datetime.UTC) - supervisor_started).total_seconds()
+    )
     row = pq.read_table(job / "motion.parquet").to_pylist()[0]
     sequence = str(row["sequence_id"])
     if "/" in sequence or "\\" in sequence or sequence in (".", ".."):
@@ -143,6 +163,19 @@ def run_child(args):
 
     class LocalMetrics:
         def __init__(self, config, **kwargs):
+            if args.comparison_config:
+                previous_config = Path(args.comparison_config)
+                verification = validate_replay_only_change(
+                    json.loads(previous_config.read_text()), dataclasses.asdict(config)
+                )
+                previous_provenance = json.loads(
+                    (previous_config.parent / "provenance.json").read_text()
+                )
+                if previous_provenance["job_motion_sha256"] != sha256(
+                    job / "motion.parquet"
+                ):
+                    raise ValueError("Comparison input trajectory differs")
+                write_json(out / "comparison_verification.json", verification)
             self.stream = (out / "metrics.jsonl").open("w", buffering=1)
             write_json(out / "training_config.json", dataclasses.asdict(config))
             write_json(out / "environment_config.json", kwargs["environment_config"])
@@ -150,8 +183,29 @@ def run_child(args):
         def log(self, metrics, step):
             if extension is not None:
                 extension.log(metrics, step)
-            record = {"time_utc": utc_now(), "transitions": step, **metrics}
+            record = {
+                "time_utc": utc_now(),
+                "transitions": step,
+                "training_elapsed_s": time.monotonic() - started,
+                **metrics,
+            }
             self.stream.write(json.dumps(record, allow_nan=False) + "\n")
+            write_json(
+                out / "progress.json",
+                {
+                    "state": "training",
+                    "transitions": step,
+                    "training_elapsed_s": record["training_elapsed_s"],
+                    "assistance_scale": metrics.get("curriculum/voc_scale"),
+                    "curriculum_stage": metrics.get("curriculum/stage_index"),
+                    "throughput": metrics.get("throughput/env_steps_per_second"),
+                    "replay_size": metrics.get("replay/size_transitions"),
+                    "actor_skipped_fraction": metrics.get("sac/actor_skipped_fraction"),
+                    "critic_skipped_fraction": metrics.get(
+                        "sac/critic_skipped_fraction"
+                    ),
+                },
+            )
 
         def close(self):
             self.stream.close()
@@ -159,6 +213,16 @@ def run_child(args):
         def log_checkpoint(self, paths, **kwargs):
             if extension is not None:
                 extension.log_checkpoint(paths, **kwargs)
+            else:
+                write_json(
+                    Path(paths.policy).with_suffix(".experiment.json"),
+                    {
+                        "environment_steps": kwargs["environment_steps"],
+                        "training_elapsed_s": time.monotonic() - started,
+                        "method": "native_flash_sac",
+                        **kwargs.get("metadata", {}),
+                    },
+                )
 
     native.WandbLogger = LocalMetrics
     original_run = native.run_training
@@ -380,6 +444,10 @@ def main():
     parser.add_argument("--worlds", type=int, default=1024)
     parser.add_argument("--batch-size", type=int, default=2048)
     parser.add_argument("--replay-capacity", type=int, default=1000000)
+    parser.add_argument(
+        "--comparison-config",
+        help="Require identical learner config except replay capacity",
+    )
     parser.add_argument("--transitions", type=int, default=2000896)
     parser.add_argument("--checkpoint-interval", type=int, default=2000896)
     parser.add_argument("--memory-limit-mib", type=int, default=21504)

@@ -944,3 +944,30 @@ batch here, followed by five epochs and four minibatches; it has no rolling 5M
 replay buffer. FlashSAC capacity tests passed 5M through 7M with about 23.3 GiB
 total GPU usage, while 8M encountered CUDA OOM. This establishes observed fit,
 not a learning improvement or enough room for overlapping evaluation.
+
+## Reward audit and native FlashSAC 5M comparison
+
+The 350M PPO continuation improved assisted step reward from 0.0756 to 0.1322
+(first/last 40 iterations), but kept assistance at 1.0. Final unassisted AUC
+fell to 0.1158 from 0.1989 at 300M. Recomputing all six checkpoint evaluations
+from raw poses reproduced all four metrics. No PPO updates were skipped and
+the weighted reward components sum to the total within 2.5e-8. The late episode
+endings were dominated by palm-tracking failure, keeping the completion and
+progress gates closed. This implicates the assistance handoff in this adaptation;
+it does not isolate PPO or the trajectory correction as the cause.
+
+The adaptation uses per-step reward statistics rather than DexMachina's
+episode-return/max-length statistics. Its thresholds, discrete gain levels,
+reset mixture and whole-body controller also differ. The native object reward
+tracks position directly, while AUC depends on both position and rotation.
+These findings and their limits are in
+`experiments/ppo_reward_method_audit_20261026.json`.
+
+The user requested a fresh native FlashSAC run with 5M replay, batch 2048,
+2048 worlds, 349999104 transitions, the same corrected Tier1 episode5/seed42,
+and unchanged native optimizer/reward/reset/curriculum. The launcher rejects
+learner configuration differences from the saved 2M baseline other than replay
+capacity and checks the motion hash. It retains native 10M checkpoint intervals
+and evaluates seven checkpoints after training releases GPU memory. Specification:
+`experiments/flash_sac_5m_20261026.json`. This run uses neither the Dex-inspired
+curriculum nor a world model.

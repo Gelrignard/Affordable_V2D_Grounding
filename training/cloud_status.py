@@ -468,6 +468,11 @@ def snapshot(root, *, now=None, alive=None):
         )
         if monitor.get("dex_ppo_full")
         else None,
+        "flash_sac_5m": bounded_test_snapshot(
+            root, monitor["flash_sac_5m"], now=now, script="run_flash_sac_5m.py"
+        )
+        if monitor.get("flash_sac_5m")
+        else None,
         "replay_capacity_refinement": bounded_test_snapshot(
             root,
             monitor["replay_refinement"],

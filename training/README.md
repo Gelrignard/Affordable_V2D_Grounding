@@ -712,7 +712,8 @@ one checksum-verified 2.3 MB bundle. The clips are 22 seconds at 50 FPS and
 `outputs/cloud/native_full_t1_ep5/{original,corrected}/policy_headless.mp4`.
 The viewer may restart failed episodes; use the separate no-reset evaluation
 reports for quantitative results. Video hashes and render times are recorded in
-the result JSON. The completed-run monitor is paused and the GPU is idle; the
+the result JSON. That completed pair's monitor was paused after reporting. The
+subsequent candidate experiments and their monitoring are described below; the
 instance remains powered on.
 
 ## Leaderboard-style reporting
@@ -793,6 +794,14 @@ reaction signs, torque about the COM, gravity supported by the floor, quaternion
 sign invariance and the curriculum gate. Learning results are reported
 separately from these implementation checks. PPO, a phase-state bank, joint
 prior reweighting and the optional WM are not enabled in this initial ablation.
+
+The bounded pair was launched from commit `8b6151a` in
+`/root/autodl-tmp/v2d/native_candidates_20261026_v1`. Its immutable source snapshot
+is under `candidate_pair/executed_source`; logs and outcomes remain alongside it.
+The read-only endpoint exposes `candidate_training` separately from the paused
+custom queue and completed native baseline. Scheduled summaries remain at
+00:00, 06:00, 12:00 and 18:00 New York time, with no intervening checks. A planned
+stall-gate stop is recorded as a scientific outcome rather than a queue crash.
 
 Keep native CHORD, frozen SONIC and all body/finger residuals. First isolate a
 DexMachina-inspired competence-based assistance curriculum, then add a robust

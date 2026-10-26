@@ -122,6 +122,101 @@ def diagnostic_snapshot(root, relative, *, now, alive=None):
     }
 
 
+def candidate_snapshot(root, relative, *, now, alive=None):
+    """Read bounded extension experiments separately from intentionally paused work."""
+    root = Path(root).resolve()
+    path = (root / relative).resolve()
+    if not path.is_relative_to(root):
+        raise ValueError("candidate status path escapes configured root")
+    queue = read_json(path)
+    if queue is None:
+        return {"state": "status_unavailable", "path": str(path)}
+    running = (
+        process_alive(queue.get("pid"), script="run_chord_candidates.py")
+        if alive is None
+        else alive
+    )
+    activity = [path.stat().st_mtime]
+    runs = []
+    for entry in queue.get("runs", []):
+        variant = entry.get("variant")
+        if variant == "native_corrected":
+            runs.append(
+                {
+                    key: entry.get(key)
+                    for key in (
+                        "variant",
+                        "state",
+                        "transitions",
+                        "leaderboard",
+                        "evaluation_seconds",
+                    )
+                }
+            )
+            continue
+        if variant not in ("adaptive", "adaptive_wrench"):
+            continue
+        folder = path.parent / variant
+        training = read_json(folder / "status.json") or {}
+        extension = read_json(folder / "extension_status.json") or {}
+        metric = last_metric(folder / "metrics.jsonl")
+        outcome = extension.get("latest_unassisted", {})
+        probe = extension.get("latest_probe", {})
+        runs.append(
+            {
+                "variant": variant,
+                "state": extension.get("state", entry.get("state")),
+                "transitions": max(
+                    metric.get("transitions") or 0,
+                    extension.get("transitions") or 0,
+                )
+                or None,
+                "throughput": metric.get("throughput/env_steps_per_second"),
+                "assistance_scale": metric.get("curriculum/voc_scale"),
+                "peak_gpu_used_mib": training.get("peak_gpu_used_mib"),
+                "training_elapsed_s": extension.get("training_elapsed_s"),
+                "evaluation_elapsed_s": extension.get("evaluation_elapsed_s"),
+                "decision": extension.get("decision"),
+                "leaderboard": read_json(folder / "leaderboard.json"),
+                "latest_unassisted": outcome.get("leaderboard"),
+                "reference_tracking": outcome.get("reference_tracking"),
+                "physical_diagnostics": outcome.get("physical_diagnostics"),
+                "probe_assistance": probe.get("probe_assistance"),
+                "probe_physical_diagnostics": probe.get("physical_diagnostics"),
+                "probe_reference_tracking": probe.get("reference_tracking"),
+            }
+        )
+        for name in ("status.json", "metrics.jsonl", "extension_status.json"):
+            file = folder / name
+            if file.exists():
+                activity.append(file.stat().st_mtime)
+    state = queue.get("state")
+    age = max(0, now - max(activity))
+    if state == "running" and not running:
+        state = "stopped_without_exit_record"
+    elif state == "running" and age > 600:
+        state = "possibly_stalled"
+    plan = path.parent / "plan.json"
+    elapsed = (
+        max(0, now - plan.stat().st_mtime)
+        if running and plan.exists()
+        else queue.get("elapsed_s")
+    )
+    return {
+        "state": state,
+        "process_alive": running,
+        "path": str(path),
+        "activity_age_s": age,
+        "elapsed_s": elapsed,
+        "runs": runs,
+        "error": queue.get("error"),
+        "world_model": False,
+        "scope": "corrected Tier 1 episode 5, seed 42; local input-reference metrics",
+        "maximum_transitions_per_candidate": 60002304,
+        "official_leaderboard_score": False,
+    }
+
+
 def snapshot(root, *, now=None, alive=None):
     root = Path(root)
     now = time.time() if now is None else now
@@ -280,6 +375,9 @@ def snapshot(root, *, now=None, alive=None):
         "research_sources": read_json(root / "research/repositories.json"),
         "diagnostics": diagnostic_snapshot(root, monitor["diagnostics"], now=now)
         if monitor.get("diagnostics")
+        else None,
+        "candidate_training": candidate_snapshot(root, monitor["candidates"], now=now)
+        if monitor.get("candidates")
         else None,
         "log_tail_on_error": tail(logs / f"{prefix}.log", 6000)
         if state not in ("running", "complete", "paused_by_user")

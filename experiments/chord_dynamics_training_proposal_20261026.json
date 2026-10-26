@@ -1,5 +1,7 @@
 {
-  "status": "proposal_only_no_gpu_runs_started",
+  "status": "initial_native_curriculum_and_realized_wrench_ablation_implemented_and_launched",
+  "implementation": "experiments/chord_candidates_v1_20261026.json",
+  "remaining_proposals": "Contact-force projection, phase-state bank, confidence joint-prior reweighting, PPO comparison and validated optional WM remain future controlled tests; they are not part of the current run.",
   "objective": "Improve unassisted Track 2 AUC, SP-SR, MP-SR and MPPE per total GPU-hour by extending the pinned native CHORD learner.",
   "baseline": {
     "runtime_commit": "8c778f905cb35f76f8e6cd6e2ea486da4fb9e0ef",

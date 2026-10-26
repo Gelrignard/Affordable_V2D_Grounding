@@ -1,5 +1,9 @@
 {
-  "status": "implemented_integration_verified_ready_for_bounded_pair",
+  "status": "bounded_pair_launched",
+  "implementation_commit": "8b6151a",
+  "queue_pid_at_launch": 124282,
+  "queue_status": "/root/autodl-tmp/v2d/native_candidates_20261026_v1/candidate_pair/queue_status.json",
+  "summary_schedule": "00:00, 06:00, 12:00 and 18:00 America/New_York; pause after terminal outcomes are reported",
   "authorization": "User: implement the plan and see the results, 2026-10-26",
   "runtime_commit": "8c778f905cb35f76f8e6cd6e2ea486da4fb9e0ef",
   "tier": 1,

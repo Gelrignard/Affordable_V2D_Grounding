@@ -3,10 +3,47 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from training.cloud_status import diagnostic_snapshot, snapshot
+from training.cloud_status import candidate_snapshot, diagnostic_snapshot, snapshot
 
 
 class CloudStatusTests(unittest.TestCase):
+    def test_candidate_stall_gate_is_not_a_crashed_queue(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            run = root / "candidate/adaptive"
+            run.mkdir(parents=True)
+            (run.parent / "queue_status.json").write_text(
+                json.dumps(
+                    {
+                        "state": "complete",
+                        "runs": [
+                            {"variant": "adaptive", "state": "stopped_at_stall_gate"}
+                        ],
+                    }
+                )
+            )
+            (run / "extension_status.json").write_text(
+                json.dumps(
+                    {
+                        "state": "stopped_at_stall_gate",
+                        "transitions": 30,
+                        "latest_unassisted": {
+                            "leaderboard": {"scores": {"spider_sr": 0}}
+                        },
+                    }
+                )
+            )
+            result = candidate_snapshot(
+                root, "candidate/queue_status.json", now=0, alive=False
+            )
+            self.assertEqual(result["state"], "complete")
+            self.assertEqual(result["runs"][0]["state"], "stopped_at_stall_gate")
+            self.assertEqual(
+                result["runs"][0]["latest_unassisted"]["scores"]["spider_sr"], 0
+            )
+            with self.assertRaises(ValueError):
+                candidate_snapshot(root, "../escape", now=0)
+
     def test_native_leaderboard_report_is_exposed_separately(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

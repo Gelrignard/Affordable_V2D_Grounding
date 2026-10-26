@@ -138,13 +138,19 @@ def run(args):
                 ]
                 # A rendering failure must not discard trained policies or
                 # prevent the second policy from training. Record it explicitly.
+                # Newton imports pyglet graphics before creating the window;
+                # select EGL before that import on a display-less cloud host.
+                render_env = env | {
+                    "PYGLET_HEADLESS": "true",
+                    "PYOPENGL_PLATFORM": "egl",
+                }
                 try:
                     with (run_dir / "video.log").open("w") as log:
                         subprocess.run(
                             command,
                             stdout=log,
                             stderr=subprocess.STDOUT,
-                            env=env,
+                            env=render_env,
                             check=True,
                             timeout=600,
                         )

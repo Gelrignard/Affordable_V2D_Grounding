@@ -678,3 +678,36 @@ allow 5–6 hours for the pair including setup and evaluation. This is not a
 convergence guarantee. The old custom queue and all earlier artifacts remain
 preserved. The prepaid instance stays powered on. Scheduled summaries occur
 only at 00:00, 06:00, 12:00 and 18:00 America/New_York.
+
+The pair completed at 08:02 New York time on October 26, taking 16,806.6 seconds
+(4 h 40 min) including evaluations and the initial unsuccessful video attempts.
+Both policies reached 349,999,104 transitions and the final zero-assistance
+curriculum stage. Full results are in
+`experiments/native_chord_full_results_20261026.json`.
+
+| Tier 1 episode 5 input | Training time | Object-center error | MPPE | ADD-AUC | Native reference success |
+|---|---|---|---|---|---|
+| Original | 2 h 20 min | 0.2324 m | 23.3374 cm | 0.3184 | 0/16 |
+| Corrected | 2 h 18 min | 0.2846 m | 28.5571 cm | 0.2546 | 0/16 |
+
+These are unassisted evaluations against the tier input reference, with one
+training seed per variant. The corrected input has higher final object error
+and lower ADD-AUC in this test; neither policy satisfies the native success criterion.
+This single episode does not establish a general effect of correction, and the
+reduced replay remains a departure from the published recipe. Peak total GPU
+memory was 15,689 and 15,693 MiB, respectively; training completed without a
+memory-guard stop. No additional training has been started.
+
+Initial MP4 export failed because pyglet tried to connect to an X11 display on
+the headless host. Render subprocesses now select `PYGLET_HEADLESS=true` and
+`PYOPENGL_PLATFORM=egl` before importing the renderer. Video recovery uses only
+the terminal policies; it does not retrain or change the saved evaluations.
+
+Both recovery exports completed and were downloaded with evaluation reports as
+one checksum-verified 2.3 MB bundle. The clips are 22 seconds at 50 FPS and
+1280 × 720, available under
+`outputs/cloud/native_full_t1_ep5/{original,corrected}/policy_headless.mp4`.
+The viewer may restart failed episodes; use the separate no-reset evaluation
+reports for quantitative results. Video hashes and render times are recorded in
+the result JSON. The completed-run monitor is paused and the GPU is idle; the
+instance remains powered on.

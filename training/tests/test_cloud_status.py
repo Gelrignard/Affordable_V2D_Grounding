@@ -3,10 +3,50 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from training.cloud_status import snapshot
+from training.cloud_status import diagnostic_snapshot, snapshot
 
 
 class CloudStatusTests(unittest.TestCase):
+    def test_native_diagnostics_report_failure_and_training_progress_separately(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            run = root / "native/original"
+            run.mkdir(parents=True)
+            path = root / "native/queue_status.json"
+            queue = {
+                "state": "running",
+                "runs": [{"variant": "original", "state": "training"}],
+            }
+            path.write_text(json.dumps(queue))
+            (run / "metrics.jsonl").write_text(
+                '{"transitions": 2048, "curriculum/voc_scale": 1.0}\n'
+            )
+            result = diagnostic_snapshot(
+                root, "native/queue_status.json", now=0, alive=True
+            )
+            self.assertEqual(result["runs"][0]["transitions"], 2048)
+            self.assertEqual(result["runs"][0]["assistance_scale"], 1.0)
+            self.assertEqual(result["state"], "running")
+            dead = diagnostic_snapshot(
+                root, "native/queue_status.json", now=0, alive=False
+            )
+            self.assertEqual(dead["state"], "stopped_without_exit_record")
+            queue["state"] = "failed"
+            queue["error"] = "evaluation failed"
+            path.write_text(json.dumps(queue))
+            failed = diagnostic_snapshot(
+                root, "native/queue_status.json", now=0, alive=False
+            )
+            self.assertEqual(failed["state"], "failed")
+            self.assertEqual(failed["error"], "evaluation failed")
+
+    def test_native_status_path_must_stay_within_cloud_root(self):
+        with (
+            tempfile.TemporaryDirectory() as folder,
+            self.assertRaisesRegex(ValueError, "escapes"),
+        ):
+            diagnostic_snapshot(Path(folder), "../outside.json", now=0, alive=False)
+
     def test_intentional_pause_requires_matching_checkpoint_and_interrupted_run(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

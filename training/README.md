@@ -542,3 +542,114 @@ contact fraction alongside trajectory error. The threshold is not an official
 fall/success definition. These fields make a fallen robot visible without
 requiring manual trace inspection. The original full queue remains paused;
 no replacement long training run was launched during diagnosis.
+
+## Native CHORD baseline and 4090 memory tests, October 26
+
+The follow-up tests use the pinned upstream `scripts/train_flash_sac.py` entry
+point and its native JAX FlashSAC learner. They retain G1 ReconBody's reward,
+termination, settling reset, observation, exploration, n-step replay, mixed
+precision, four updates per collection, and full 29-body-joint residual action
+space. This is a downstream CHORD baseline on our prepared motions. It is not
+our PyTorch SAC with the world model switched off, nor a reproduction of
+NVIDIA's upstream retargeting. The original full SAC/WM queue remains paused.
+
+`experiments/native_chord_diagnostic.py` attaches a local JSONL metric sink to
+the upstream entry point, checks replay allocation before training, polls total
+GPU memory with `nvidia-smi`, and bounds wall time. It never edits the pinned
+runtime. `experiments/run_native_chord_pair.py` runs original and corrected
+inputs with identical settings, then evaluates each in a separate process to
+release training allocations. A native checkpoint/evaluator replaces our `.pt`
+checkpoint format for these tests. Prepared support assets and the verified
+LF/CRLF variants of the same G1 URDF are resolved explicitly.
+
+The reference is fixed during training. SONIC's encoder reads future body-joint
+positions/velocities and root orientations; its decoder reacts to the current
+robot state. The learned body residual is added after that decoder, before
+joint-specific scaling. Fingers use reference joint targets plus their own
+learned residuals. Neither the reference nor SONIC's weights are progressively
+rewritten by RL. The paused corrected run supplied the precomputed corrected
+body reference. Holding the clock at frame zero was a diagnostic intervention,
+not its training configuration. Native CHORD permits leg residuals; our paused
+run masked them. The `original_body` carrier option is a separate experimental
+deviation and is not enabled in this native baseline.
+
+The native environment is isolated at `/root/autodl-tmp/v2d/native_chord_env`.
+It reuses existing physics dependencies/assets while adding pinned JAX 0.10.2,
+Flax 0.12.7, Optax 0.2.8, and native evaluation dependencies. CUDA 12 wheels,
+cuDNN 9.10.2.21 and NVCC 12.8.93 support the installed driver 570; the published
+CUDA 13 environment requires a newer driver. No driver or original training
+environment was changed. Most downloads used the Tsinghua mirror. The small
+TFP nightly evaluation dependency unavailable there was fetched from the
+upstream lockfile URL and its SHA-256 verified.
+
+Measured native runtime probes used Tier 1 episode 5's original reference:
+
+| Worlds | SAC batch | Replay capacity | Peak total GPU memory | Outcome |
+|---|---|---|---|---|
+| 1,024 | 2,048 | 1M | 8,459 MiB | Completed 2,000,896 transitions |
+| 2,048 | 2,048 | 4M | 23,887 MiB | Memory guard interrupted; no CUDA OOM reported |
+| 2,048 | 2,048 | 2M | 15,691 MiB | Completed 2,000,896 transitions |
+
+The successful probes' median post-warmup throughput was approximately 25,475
+and 42,970 transitions/s, respectively. The latter left about 8.7 GiB of device
+memory free at the sampled peak. This includes JAX, Warp/physics and ONNX Runtime,
+unlike the earlier PyTorch-only counter. A one-second sample is not a guarantee
+against every allocation spike; the tighter subsequent preflight also budgets
+2.5 times logical replay bytes plus 4 GiB for workspaces. Do not run two of the
+2M-replay native learners concurrently on this GPU. The native full 10M replay
+recipe remains unsuitable without further memory work.
+
+For the bounded original/corrected comparison, each policy gets 10,000,384
+transitions, 2,048 worlds, batch 2,048 and replay 2M. The native 350M learning-rate
+horizon and fixed assistance thresholds remain unchanged; all of this short
+budget therefore uses assistance scale 1.0. Native source-frame playback is also
+retained. These settings differ from the earlier timestamp-resampled adapter,
+so compare original versus corrected within this pair, not its absolute errors
+against the old pilot as if all evaluation conditions were identical.
+
+Evaluation uses the native evaluator, sixteen worlds, explicit frame-zero
+initialization, no object assistance and no within-episode resets. Its object
+errors and CHORD reference-tracking success are measured against the tier's
+input reference, not official clean-ground-truth leaderboard scores. Finite
+output and reaching the final recorded frame do not imply successful control.
+Cloud source, checkpoints, logs and evaluations are retained under
+`/root/autodl-tmp/v2d/diagnosis_20261026/native_pair_t1_ep5`. The status endpoint
+reports this diagnostic queue separately from the intentionally paused full
+queue.
+
+The pair completed in **769.2 seconds (12.8 minutes)** including initialization,
+compilation, checkpointing and both evaluations. Results are preserved in
+`experiments/native_chord_diagnosis_20261026.json`:
+
+| Tier 1 episode 5 input | Steady training transitions/s | Peak total GPU memory | Unassisted object-center error | Native reference success |
+|---|---|---|---|---|
+| Original | 42,894 | 15,693 MiB | 0.6242 m | 0/16 |
+| Corrected | 43,983 | 15,701 MiB | 0.5549 m | 0/16 |
+
+Both variants have exactly identical object positions and orientations. Each
+uses one training seed and sixteen evaluation worlds, not sixteen independent
+trained policies. Both cohorts violate pelvis, palm and object reference
+criteria. The corrected mean object error is lower by 0.0693 m in this short
+test, but neither policy achieves successful manipulation. Occasional mixed
+precision update skips were small (maximum logging-window fractions: 1% actor,
+0.5% critic), and the last windows had none; they do not establish an optimizer
+failure. Training's force-closure contribution is nonzero, so its live contact
+reward path is active.
+
+At this measured sustained throughput, 350M simulator transitions project to
+about **2.2–2.3 hours** before initialization and evaluations. This is a runtime
+projection, not a convergence prediction. The native recipe does not remove
+assistance until about 210M transitions and introduces deployment-exact starts
+only at about 289M. Consequently these 10M probes establish runtime feasibility
+and an early matched comparison, not that the native recipe has converged or
+failed to converge at its intended budget. The fixed-reference SONIC design is
+also used by CHORD and is not by itself evidence of an implementation error.
+
+For subsequent controlled tests, keep this native learner as the anchor. First
+test earlier deployment-start exposure and performance-gated assistance, with
+unassisted grasp/contact and stable whole-body behavior as the acceptance
+criteria. Separately test the corrected manipulation goals against a more
+conservative SONIC body reference; do not mix all changes into one experiment.
+Reintroduce a WM only when it can be shown to reduce time to the same physical
+outcome. The paused checkpoint SHA-256 remains
+`c1177bee7d9ed7d9755861755c7f9575f18dd2e3aeced8746c3bba8811588776`.

@@ -51,6 +51,67 @@ def process_alive(pid, proc=Path("/proc"), script="run_pilot.sh"):
         return False
 
 
+def diagnostic_snapshot(root, relative, *, now, alive=None):
+    """Read an explicitly configured bounded native test queue independently."""
+    root = Path(root).resolve()
+    path = (root / relative).resolve()
+    if not path.is_relative_to(root):
+        raise ValueError("diagnostic status path escapes configured root")
+    queue = read_json(path)
+    if queue is None:
+        return {"state": "status_unavailable", "path": str(path)}
+    running = (
+        process_alive(queue.get("pid"), script="run_native_chord_pair.py")
+        if alive is None
+        else alive
+    )
+    activity = [path.stat().st_mtime]
+    runs = []
+    for entry in queue.get("runs", []):
+        variant = entry.get("variant")
+        if variant not in ("original", "corrected"):
+            continue
+        folder = path.parent / variant
+        training = read_json(folder / "status.json") or {}
+        metric = last_metric(folder / "metrics.jsonl")
+        evaluation = read_json(folder / "evaluation.json") or {}
+        runs.append(
+            {
+                "variant": variant,
+                "phase": entry.get("state"),
+                "training_state": training.get("state"),
+                "training_elapsed_s": training.get("elapsed_s"),
+                "peak_gpu_used_mib": training.get("peak_gpu_used_mib"),
+                "stop_reason": training.get("stop_reason"),
+                "transitions": metric.get("transitions"),
+                "transitions_per_second": metric.get("throughput/env_steps_per_second"),
+                "assistance_scale": metric.get("curriculum/voc_scale"),
+                "evaluation": evaluation.get("metrics"),
+                "reference_tracking": evaluation.get("reference_tracking"),
+            }
+        )
+        for name in ("status.json", "metrics.jsonl", "evaluation.json"):
+            if (folder / name).exists():
+                activity.append((folder / name).stat().st_mtime)
+    state = queue.get("state")
+    if state == "running" and not running:
+        state = "stopped_without_exit_record"
+    age = max(0, now - max(activity))
+    if state == "running" and age > 600:
+        state = "possibly_stalled"
+    return {
+        "state": state,
+        "process_alive": running,
+        "path": str(path),
+        "activity_age_s": age,
+        "elapsed_s": queue.get("elapsed_s"),
+        "error": queue.get("error"),
+        "runs": runs,
+        "metric_reference": queue.get("metric_reference"),
+        "official_leaderboard_score": False,
+    }
+
+
 def snapshot(root, *, now=None, alive=None):
     root = Path(root)
     now = time.time() if now is None else now
@@ -206,6 +267,9 @@ def snapshot(root, *, now=None, alive=None):
         "runs": runs,
         "research_checkpoint": read_json(root / "research/weights/manifest.json"),
         "research_sources": read_json(root / "research/repositories.json"),
+        "diagnostics": diagnostic_snapshot(root, monitor["diagnostics"], now=now)
+        if monitor.get("diagnostics")
+        else None,
         "log_tail_on_error": tail(logs / f"{prefix}.log", 6000)
         if state not in ("running", "complete", "paused_by_user")
         else None,

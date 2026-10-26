@@ -68,6 +68,7 @@ def snapshot(root, *, now=None, alive=None):
         else alive
     )
     exit_code = read_json(logs / f"{prefix}_exit_code.txt")
+    pause = read_json(logs / f"{prefix}_pause.json")
     activity = []
     runs = []
     for entry in plan["entries"]:
@@ -124,6 +125,7 @@ def snapshot(root, *, now=None, alive=None):
                         "control_steps",
                         "source_frames",
                         "mean_object_position_error_m_per_world",
+                        "physical_diagnostics_per_world",
                         "metric_reference",
                         "official_leaderboard_score",
                         "assistance_scale",
@@ -145,7 +147,22 @@ def snapshot(root, *, now=None, alive=None):
         activity.append((logs / f"{prefix}.log").stat().st_mtime)
     age = max(0, now - max(activity)) if activity else None
     completed = sum(run["phase"] == "complete" for run in runs)
-    if exit_code is not None:
+    paused_run = None
+    if not running and pause and pause.get("state") == "paused_by_user":
+        for run in runs:
+            checkpoint = (plan_path.parent / run["output"] / "latest.pt").resolve()
+            if (
+                str(checkpoint) == str(Path(pause.get("checkpoint", "")).resolve())
+                and checkpoint.is_file()
+                and run["metrics"].get("stop_reason") == "interrupted"
+                and run["metrics"].get("transitions") == pause.get("transitions")
+            ):
+                paused_run = run
+                break
+    if paused_run is not None:
+        state = "paused_by_user"
+        paused_run["phase"] = "paused"
+    elif exit_code is not None:
         state = "complete" if exit_code == 0 and completed == len(runs) else "failed"
     elif not running:
         state = "stopped_without_exit_record"
@@ -171,6 +188,7 @@ def snapshot(root, *, now=None, alive=None):
     return {
         "checked_utc": datetime.fromtimestamp(now, UTC).isoformat(),
         "state": state,
+        "pause": pause if paused_run is not None else None,
         "queue": prefix,
         "instance_power_policy": "keep_on_and_notify_user",
         "pid": pid,
@@ -189,7 +207,7 @@ def snapshot(root, *, now=None, alive=None):
         "research_checkpoint": read_json(root / "research/weights/manifest.json"),
         "research_sources": read_json(root / "research/repositories.json"),
         "log_tail_on_error": tail(logs / f"{prefix}.log", 6000)
-        if state not in ("running", "complete")
+        if state not in ("running", "complete", "paused_by_user")
         else None,
     }
 

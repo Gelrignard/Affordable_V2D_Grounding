@@ -12,13 +12,31 @@ from scipy.spatial.transform import Rotation
 
 from training.bundles import arrays
 from training.config import TrainConfig
-from training.evaluate import resample_poses, write_trajectory
+from training.evaluate import physical_rollout_summary, resample_poses, write_trajectory
 from training.prepare import load_job
 from training.runtime import SonicEnv, materialize_motion, support_geometry
 from training.wrench import basis_directions
 
 
 class ExportTests(unittest.TestCase):
+    def test_physical_diagnostics_keep_failure_visible_and_preserve_invalid_worlds(
+        self,
+    ):
+        times = np.array([0, 0.02, 0.04])
+        joints = np.zeros((3, 2, 7))
+        joints[:, 0, 2] = [0.8, 0.7, 0.2]
+        joints[:, 1, 2] = [0.8, 0.7, np.nan]
+        forces = np.zeros((3, 2, 1, 3))
+        forces[1, 0, 0, 0] = 1
+        active = np.ones((3, 2, 1))
+        terminated = np.array([[True, False], [True, True]])
+        result = physical_rollout_summary(times, joints, forces, active, terminated)
+        self.assertEqual(result[0]["first_tracking_failure_s"], 0.02)
+        self.assertEqual(result[0]["first_root_below_threshold_s"], 0.04)
+        self.assertEqual(result[0]["measured_hand_object_contact_fraction"], 0.5)
+        self.assertFalse(result[1]["physical_diagnostics_finite"])
+        self.assertIsNone(result[1]["minimum_root_height_m"])
+
     def test_physical_time_alignment_and_failed_world_retained(self):
         times = np.arange(6) / 50
         pose = np.zeros((6, 2, 1, 7))

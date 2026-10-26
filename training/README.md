@@ -466,3 +466,79 @@ object-lift checks in addition to trajectory error, and compare learned versus
 zero residuals before expanding episode count or parallelism. The diagnosis
 does not isolate or reject the trajectory corrector's contribution. No training
 settings or queue contents were changed by these diagnostic runs.
+
+## Checkpointed pause and executed diagnostics, 2026-10-26
+
+The user subsequently authorized a pause and active diagnosis. The trainer
+handled SIGINT and saved `latest.pt` at **172,564,480 transitions**, including
+actor, critics, WM, optimizers and counters. The scheduler was stopped before
+interrupting its child, so none of the three pending runs began. The checkpoint
+SHA-256 is `c1177bee7d9ed7d9755861755c7f9575f18dd2e3aeced8746c3bba8811588776`;
+its contents were verified unchanged after diagnosis. Resume restores those
+states with fresh replay. The prepaid instance remains powered on. The status
+endpoint now distinguishes this verified intentional pause from failure.
+
+`experiments/policy_pause_diagnosis_20261026.json` preserves 18 configurations
+of four-world zero-residual physical tests, five component/throughput profiles,
+the pause record, and executed-source hashes. Full traces and disposable
+profiling outputs remain under `/root/autodl-tmp/v2d/diagnosis_20261026`.
+Diagnostics used separate output directories and never updated the paused
+checkpoint. Profiling performed optimizer steps only in disposable copies.
+
+Measured throughput on the **same RTX 4090**, with FP32 and equal SAC training
+examples per collected transition:
+
+| Worlds / SAC batch | SAC plus WM transitions/s | SAC only transitions/s |
+|---|---:|---:|
+| 256 / 256 | 7,392 | 9,878 |
+| 1,024 / 1,024 | 24,272 | 32,622 |
+| 2,048 / 2,048 | 40,591 | 51,762 |
+
+Each timing window used 32 collections after warmup. At 256 worlds the
+simulator/adapter consumed about 47% of measured wall time, SAC updates 23%,
+and WM fitting plus imagined actor updates 25%. The profiler observed many
+small kernel launches. Skipping already-fitted normalizers was immaterial;
+TF32 did not improve these timings. The 2048-world profile reserved 3.90 GiB
+in PyTorch; this excludes Warp/ONNX allocations and is not total GPU memory.
+These are throughput measurements, not matched convergence experiments.
+The WM batch also scales with the SAC batch; imagined-actor batch remains 128.
+The SAC-only measurement follows other disposable updates, so its behavior
+distribution is not a fresh, independently trained policy. Extrapolating
+350M transitions at 51,762/s gives 1.88 h, excluding setup/evaluation and any
+throughput changes during learning; it is not a time-to-success promise.
+
+Physical diagnosis isolated a reference-consumption issue. Episode 5's original
+and corrected inputs have identical root/leg motion. Sending the corrected
+whole-body motion to SONIC caused all four worlds to fall around 10.6–11.2 s.
+Original motion delayed the fall to 21.6–21.8 s. Native environment construction,
+settling resets and source-frame playback did not remove the corrected-input
+failure. Holding the reference clock at frame zero stayed upright for the
+16-second check, but this repeats the frame-zero future encoder window; it is
+not a fully static-reference or manipulation success test.
+
+The new explicit `sonic_reference_mode: original_body` keeps the corrected
+task/finger references and policy guidance while taking only SONIC's body-motion
+tokenizer input from the same episode's original reference. Timeline, joint
+names, tier, episode and source identity are checked, and the carrier hash is
+included in checkpoint compatibility. The default remains `task`, preserving
+old checkpoint semantics. On the real adapter this separation delayed episode
+5's fall to 21.7–22.0 s. Episode 16 improved less consistently: one of four
+worlds remained above the 0.35 m root threshold for its 15.87 s duration, versus
+zero of four previously. These small diagnostic tests do not establish task
+success, an official score, or a general improvement across episodes.
+
+Freezing the original leg reference or root orientation separately did not
+remove the later fall. Thus a constant leg/orientation shortcut is not supported
+by these tests. Our full-run configuration masks all leg residuals, whereas
+native G1 FlashCHORD exposes them; restoring limited whole-body corrective
+authority is a sensible next controlled experiment. Restoring useful approach
+rewards and performance-gated assistance should be assessed with the same
+physical checks before another long queue. The added carrier option is a
+partial reference-interface fix, not a convergence fix by itself.
+
+Future evaluations now report minimum root height, first time below a labeled
+0.35 m diagnostic threshold, first tracking failure, and measured hand/object
+contact fraction alongside trajectory error. The threshold is not an official
+fall/success definition. These fields make a fallen robot visible without
+requiring manual trace inspection. The original full queue remains paused;
+no replacement long training run was launched during diagnosis.

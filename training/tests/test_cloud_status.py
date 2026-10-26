@@ -7,6 +7,36 @@ from training.cloud_status import snapshot
 
 
 class CloudStatusTests(unittest.TestCase):
+    def test_intentional_pause_requires_matching_checkpoint_and_interrupted_run(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            plan = root / "project/outputs/policy_pilot_two"
+            output = plan / "runs/example"
+            output.mkdir(parents=True)
+            logs = root / "logs"
+            logs.mkdir()
+            (plan / "plan.json").write_text(
+                json.dumps({"entries": [{"output": "runs/example"}]})
+            )
+            (logs / "pilot_exit_code.txt").write_text("143")
+            checkpoint = output / "latest.pt"
+            checkpoint.write_bytes(b"checkpoint-preserved")
+            (output / "report.json").write_text(
+                json.dumps({"stop_reason": "interrupted", "transitions": 128})
+            )
+            pause = {
+                "state": "paused_by_user",
+                "checkpoint": str(checkpoint),
+                "transitions": 128,
+            }
+            (logs / "pilot_pause.json").write_text(json.dumps(pause))
+            status = snapshot(root, alive=False)
+            self.assertEqual(status["state"], "paused_by_user")
+            self.assertEqual(status["runs"][0]["phase"], "paused")
+            pause["transitions"] = 64
+            (logs / "pilot_pause.json").write_text(json.dumps(pause))
+            self.assertEqual(snapshot(root, alive=False)["state"], "failed")
+
     def test_new_queue_does_not_reuse_completed_pilot_status(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

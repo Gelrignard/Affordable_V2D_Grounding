@@ -141,6 +141,44 @@ def evaluation_code_hash():
     return digest.hexdigest()
 
 
+def physical_rollout_summary(times, joints, forces, active, terminated):
+    """Expose physical failure indicators separately from trajectory error.
+
+    A root below 0.35 m is a diagnostic threshold, not an official fall or task
+    success definition. Tracking termination can occur before a robot falls.
+    """
+    times, joints, forces, active, terminated = map(
+        np.asarray, (times, joints, forces, active, terminated)
+    )
+    result = []
+    for world in range(joints.shape[1]):
+        root = joints[:, world, 2]
+        valid = bool(np.isfinite(root).all() and np.isfinite(forces[:, world]).all())
+        below = np.flatnonzero(root < 0.35)
+        failures = np.flatnonzero(terminated[:, world])
+        contact = (
+            active[1:, world].astype(bool)
+            & (np.linalg.norm(forces[1:, world], axis=-1) > 0.01)
+        ).any(axis=-1)
+        result.append(
+            {
+                "physical_diagnostics_finite": valid,
+                "root_height_threshold_m": 0.35,
+                "minimum_root_height_m": float(root.min()) if valid else None,
+                "first_root_below_threshold_s": float(times[below[0]])
+                if valid and len(below)
+                else None,
+                "first_tracking_failure_s": float(times[failures[0] + 1])
+                if len(failures)
+                else None,
+                "measured_hand_object_contact_fraction": float(contact.mean())
+                if valid
+                else None,
+            }
+        )
+    return result
+
+
 @torch.no_grad()
 def evaluate(env, checkpoint_path, output):
     output = Path(output)
@@ -285,6 +323,9 @@ def evaluate(env, checkpoint_path, output):
         "valid_worlds": valid.tolist(),
         "ever_terminated": np.stack(terminations).any(axis=0).tolist(),
         "mean_object_position_error_m_per_world": per_world_error,
+        "physical_diagnostics_per_world": physical_rollout_summary(
+            control_times, joints, contact_forces, contact_active, terminations
+        ),
         "metric_reference": f"tier{env.job['tier']}_input_reference",
         "official_leaderboard_score": False,
         "resets": 0,

@@ -231,6 +231,41 @@ class SonicEnv:
             device=str(self.device),
         )
         self.env.set_voc_scale(0.0)
+        self.controller_reference_identity = None
+        if config.sonic_reference_mode == "original_body":
+            from .controller_reference import install_sonic_carrier
+
+            carrier_dir = self.job_dir.parent / "original"
+            carrier_job = load_job(carrier_dir)
+            for field in (
+                "tier",
+                "episode_index",
+                "sequence_id",
+                "source_frames",
+                "source_fps",
+                "source_sha256",
+            ):
+                if carrier_job[field] != self.job[field]:
+                    raise ValueError(f"SONIC carrier differs in {field}")
+            if carrier_job["variant"] != "original":
+                raise ValueError("original_body requires an original reference job")
+            carrier_motion = materialize_motion(
+                carrier_dir, scratch / "controller_motion.parquet"
+            )
+            carrier_reference = load_reference(
+                carrier_motion,
+                control_fps=self.control_fps,
+                source_frame_playback=False,
+            )
+            install_sonic_carrier(
+                self.env, self.scene, self.reference, carrier_reference
+            )
+            self.controller_reference_identity = {
+                "mode": config.sonic_reference_mode,
+                "job_sha256": sha256(carrier_dir / "job.json"),
+                "tier": carrier_job["tier"],
+                "episode_index": carrier_job["episode_index"],
+            }
         self.frames = self.reference.num_frames
         self.object_ids = (
             self.tensor(self.env.command.body_ids_w).long().reshape(self.worlds, -1)
@@ -296,6 +331,8 @@ class SonicEnv:
         # Runtime random seeds differ between training/evaluation, but the dynamics interface does not.
         signature["env"]["reset"]["seed"] = 0
         signature["env"]["action"]["body_delay"]["seed"] = 0
+        if self.controller_reference_identity is not None:
+            signature["controller_reference"] = self.controller_reference_identity
         self.spec = {
             "state_dim": state.shape[-1],
             "obs_dim": self.obs_dim,

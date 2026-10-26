@@ -217,6 +217,68 @@ def candidate_snapshot(root, relative, *, now, alive=None):
     }
 
 
+def bounded_test_snapshot(root, relative, *, now, script, alive=None):
+    """Capacity/PPO queues have their own lifetimes; old paused work is unrelated."""
+    root = Path(root).resolve()
+    path = (root / relative).resolve()
+    if not path.is_relative_to(root):
+        raise ValueError("bounded test status path escapes configured root")
+    queue = read_json(path)
+    if queue is None:
+        return {"state": "status_unavailable", "path": str(path)}
+    running = process_alive(queue.get("pid"), script=script) if alive is None else alive
+    activity = [path.stat().st_mtime]
+    runs = []
+    for entry in queue.get("runs", []):
+        folder = Path(entry.get("path", "")).resolve()
+        if not folder.is_relative_to(path.parent):
+            continue
+        progress = read_json(folder / "progress.json") or {}
+        training = read_json(folder / "status.json") or {}
+        metric = last_metric(folder / "metrics.jsonl")
+        runs.append(
+            {
+                "variant": entry.get("variant"),
+                "state": entry.get("state"),
+                "progress": progress,
+                "training": entry.get("training"),
+                "peak_gpu_used_mib": training.get("peak_gpu_used_mib"),
+                "stop_reason": training.get("stop_reason"),
+                "learning_rate": metric.get("ppo/learning_rate"),
+                "skipped_update_fraction": metric.get(
+                    "ppo/skipped_update_fraction_per_iteration"
+                ),
+                "evaluations": entry.get("evaluations", []),
+            }
+        )
+        for name in ("progress.json", "metrics.jsonl", "status.json"):
+            item = folder / name
+            if item.exists():
+                activity.append(item.stat().st_mtime)
+    age = max(0, now - max(activity))
+    state = queue.get("state")
+    if state in ("running", "waiting_for_capacity") and not running:
+        state = "stopped_without_exit_record"
+    elif state == "running" and age > 600:
+        state = "possibly_stalled"
+    return {
+        "state": state,
+        "path": str(path),
+        "process_alive": running,
+        "activity_age_s": age,
+        "elapsed_s": queue.get("elapsed_s"),
+        "active": queue.get("active"),
+        "error": queue.get("error"),
+        "runs": runs,
+        "results": queue.get("results"),
+        "largest_passing_default": queue.get("largest_passing_default"),
+        "largest_passing_tested": queue.get("largest_passing_tested"),
+        "failing_default_upper_bound": queue.get("failing_default_upper_bound"),
+        "leaderboard": read_json(path.parent / "leaderboard.json"),
+        "official_leaderboard_score": False,
+    }
+
+
 def snapshot(root, *, now=None, alive=None):
     root = Path(root)
     now = time.time() if now is None else now
@@ -378,6 +440,21 @@ def snapshot(root, *, now=None, alive=None):
         else None,
         "candidate_training": candidate_snapshot(root, monitor["candidates"], now=now)
         if monitor.get("candidates")
+        else None,
+        "replay_capacity_tests": bounded_test_snapshot(
+            root, monitor["replay_capacity"], now=now, script="replay_capacity_sweep.py"
+        )
+        if monitor.get("replay_capacity")
+        else None,
+        "dex_ppo_tests": bounded_test_snapshot(
+            root, monitor["dex_ppo"], now=now, script="run_dex_ppo_tests.py"
+        )
+        if monitor.get("dex_ppo")
+        else None,
+        "replay_capacity_refinement": bounded_test_snapshot(
+            root, monitor["replay_refinement"], now=now, script="refine_replay_capacity.py"
+        )
+        if monitor.get("replay_refinement")
         else None,
         "log_tail_on_error": tail(logs / f"{prefix}.log", 6000)
         if state not in ("running", "complete", "paused_by_user")

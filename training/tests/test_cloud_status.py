@@ -3,10 +3,49 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from training.cloud_status import candidate_snapshot, diagnostic_snapshot, snapshot
+from training.cloud_status import (
+    bounded_test_snapshot,
+    candidate_snapshot,
+    diagnostic_snapshot,
+    snapshot,
+)
 
 
 class CloudStatusTests(unittest.TestCase):
+    def test_bounded_queue_progress_and_missing_process_are_separate(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            run = root / "ppo/dex_ppo"
+            run.mkdir(parents=True)
+            (run.parent / "queue_status.json").write_text(
+                json.dumps(
+                    {
+                        "state": "running",
+                        "runs": [
+                            {
+                                "variant": "dex_ppo",
+                                "state": "training",
+                                "path": str(run),
+                            }
+                        ],
+                    }
+                )
+            )
+            (run / "progress.json").write_text(
+                '{"transitions": 49152, "assistance_scale": 0.75}'
+            )
+            result = bounded_test_snapshot(
+                root, "ppo/queue_status.json", now=0, script="test.py", alive=True
+            )
+            self.assertEqual(result["runs"][0]["progress"]["assistance_scale"], 0.75)
+            self.assertEqual(result["state"], "running")
+            result = bounded_test_snapshot(
+                root, "ppo/queue_status.json", now=0, script="test.py", alive=False
+            )
+            self.assertEqual(result["state"], "stopped_without_exit_record")
+            with self.assertRaises(ValueError):
+                bounded_test_snapshot(root, "../escape", now=0, script="test.py")
+
     def test_candidate_stall_gate_is_not_a_crashed_queue(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

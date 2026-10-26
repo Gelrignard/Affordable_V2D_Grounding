@@ -194,9 +194,14 @@ def run_child(args):
         ring_mib = layout["ring_bytes"] / 2**20
         # Observed native JAX allocation peaks exceeded logical replay bytes
         # substantially. Budget allocator/compiler temporaries conservatively.
-        if used["used_mib"] + 2.5 * ring_mib + 4096 > args.memory_limit_mib:
+        if (
+            used["used_mib"]
+            + args.preflight_ring_multiplier * ring_mib
+            + args.preflight_workspace_mib
+            > args.memory_limit_mib
+        ):
             raise MemoryError(
-                "Replay preflight exceeds guard with 2.5x replay plus 4 GiB workspace allowance"
+                "Replay preflight exceeds the configured ring/workspace allowance"
             )
         if extension is not None:
             config = extension.bind(env, config)
@@ -293,7 +298,7 @@ def supervise(args):
         "started_utc": utc_now(),
         "arguments": vars(args),
         "peak_gpu_used_mib": 0,
-        "memory_poll_seconds": 1,
+        "memory_poll_seconds": args.memory_poll_seconds,
         "memory_limit_note": "Sampled guard plus replay preflight; not an OOM guarantee.",
     }
     write_json(out / "status.json", status)
@@ -338,7 +343,7 @@ def supervise(args):
                 elif time.monotonic() - stop_time > 30:
                     os.killpg(proc.pid, signal.SIGKILL)
                 write_json(out / "status.json", status)
-                time.sleep(1)
+                time.sleep(args.memory_poll_seconds)
         except BaseException as error:  # noqa: BLE001 - preserve status and stop child on interruption
             stop_reason = f"supervisor_exception: {type(error).__name__}: {error}"
             if proc.poll() is None:
@@ -379,6 +384,9 @@ def main():
     parser.add_argument("--checkpoint-interval", type=int, default=2000896)
     parser.add_argument("--memory-limit-mib", type=int, default=21504)
     parser.add_argument("--max-seconds", type=int, default=1800)
+    parser.add_argument("--preflight-ring-multiplier", type=float, default=2.5)
+    parser.add_argument("--preflight-workspace-mib", type=int, default=4096)
+    parser.add_argument("--memory-poll-seconds", type=float, default=1.0)
     parser.add_argument(
         "--method", choices=("native", "adaptive", "adaptive_wrench"), default="native"
     )
@@ -389,6 +397,10 @@ def main():
     args = parser.parse_args()
     if args.transitions % args.worlds:
         parser.error("transition budget must be divisible by world count")
+    if args.preflight_ring_multiplier < 1 or args.preflight_workspace_mib < 0:
+        parser.error("Replay preflight must include at least the logical ring bytes")
+    if args.memory_poll_seconds <= 0:
+        parser.error("Memory poll interval must be positive")
     if args.method == "adaptive" and args.dynamics_weight != 0:
         parser.error("adaptive control must have zero dynamics weight")
     if args.method == "adaptive_wrench" and args.dynamics_weight <= 0:

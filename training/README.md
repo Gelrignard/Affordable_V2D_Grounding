@@ -15,7 +15,43 @@ DexMachina-style experiments on a separate branch. Historical PyTorch SAC/WM
 code remains for reproducibility; its queue is paused and it is not the active
 baseline. The next section describes that earlier experimental pipeline.
 
-## Implemented learning pipeline
+## Active DexMachina-inspired experiment branch
+
+`work/tier2-dexmachina` preserves the CHORD baseline at commit `fef0ec7` on
+`work/tier2-rl`. Its bounded tests are specified in
+[`experiments/dex_ppo_tests_20261026.json`](../experiments/dex_ppo_tests_20261026.json).
+`experiments/replay_capacity_sweep.py` fills and wraps real FlashSAC buffers,
+measures total GPU memory and throughput, and isolates allocator failures.
+
+`experiments/run_dex_ppo_tests.py` waits for the capacity sweep, verifies eight
+PPO iterations plus checkpoint evaluation, then runs native CHORD PPO for up
+to 20.054M transitions/20 minutes and DexMachina-inspired PPO for up to 60.015M
+transitions/45 minutes. Both use corrected Tier 1 episode 5, seed 42, 2048
+worlds, 24-step rollouts, native PPO losses and KL-adaptive learning rate,
+unchanged full-body/finger SONIC residuals and 50Hz control. Neither uses a WM.
+These caps are diagnostic budgets, not promised convergence times.
+
+The inspired variant adapts DexMachina's rolling reward/completion, reward
+plateau and recovery ideas to CHORD's seven assistance scales. It starts with
+25% exact frame-zero resets, rising to 50% at zero assistance. Reward means
+are divided by the native weight and control timestep before gating; completed
+episode statistics are weighted by the number of completed episodes. It clears
+rolling evidence after each curriculum change. Thresholds, decisions and full
+curriculum state are saved. This is an adaptation on the humanoid CHORD
+environment, not a reproduction of the floating-hand DexMachina system.
+
+Checkpoint evaluation runs after each learner process exits, avoiding two GPU
+allocators competing for VRAM. Every approximately 10M checkpoint plus the
+terminal checkpoint receives a zero-assistance, frame-zero, 16-world evaluation
+with raw poses, mesh samples and independently cross-checked leaderboard metrics.
+The native PPO control retains the native 2000-iteration first assistance
+threshold; this short control therefore remains assisted during training. The
+20M comparison isolates the proposed curriculum/reset change on PPO, while the
+existing FlashSAC 20M/40M/60M checkpoints compare the whole candidate pipeline.
+Neither comparison establishes full-budget superiority. AUC-selected checkpoints
+are exploratory selections on these evaluation worlds, not held-out scores.
+
+## Historical custom SAC/world-model pipeline
 
 ```text
 same-tier pose reference + object goal + contact regions

@@ -87,6 +87,7 @@ def diagnostic_snapshot(root, relative, *, now, alive=None):
                 "transitions_per_second": metric.get("throughput/env_steps_per_second"),
                 "assistance_scale": metric.get("curriculum/voc_scale"),
                 "evaluation": evaluation.get("metrics"),
+                "leaderboard": read_json(folder / "leaderboard.json"),
                 "reference_tracking": evaluation.get("reference_tracking"),
                 "video": entry.get("video"),
                 "video_error": entry.get("video_error"),
@@ -200,6 +201,7 @@ def snapshot(root, *, now=None, alive=None):
                         "official_leaderboard_score",
                         "assistance_scale",
                         "resets",
+                        "leaderboard",
                     )
                 }
                 if evaluation

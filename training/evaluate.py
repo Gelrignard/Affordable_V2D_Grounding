@@ -16,6 +16,8 @@ from scipy.spatial.transform import Rotation, Slerp
 
 from .bundles import sha256
 from .checkpoint import read_checkpoint
+from .leaderboard import leaderboard_row, write_report
+from .leaderboard_metrics import pose_metrics
 from .networks import Actor
 
 
@@ -331,7 +333,33 @@ def evaluate(env, checkpoint_path, output):
         "resets": 0,
         "assistance_scale": 0,
     }
+    # Compute challenge-style scores on all recorded frames and worlds. Keep the
+    # exact local mesh samples so the AUC estimate can be reproduced off GPU.
+    from flash_chord.evaluation.rollout import sample_object_vertices
+
+    vertices = sample_object_vertices(env.scene)
+    np.savez_compressed(output / "auc_vertices.npz", vertices=vertices)
+    report["leaderboard"] = pose_metrics(achieved, reference, vertices)
+    report["leaderboard"].update(
+        {
+            "metric_reference": report["metric_reference"],
+            "official_leaderboard_score": False,
+        }
+    )
     (output / "evaluation.json").write_text(
         json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8"
+    )
+    write_report(
+        output,
+        [
+            leaderboard_row(
+                report,
+                tier=env.job["tier"],
+                episode=env.job["episode_index"],
+                variant=env.job["variant"],
+                transitions=checkpoint.get("transitions"),
+                training_s=checkpoint.get("wall_seconds"),
+            )
+        ],
     )
     return report

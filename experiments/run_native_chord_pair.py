@@ -17,6 +17,10 @@ from native_chord_diagnostic import utc_now, write_json
 
 
 def run(args):
+    project = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(project))
+    from training import leaderboard
+
     out = Path(args.output).resolve()
     out.mkdir(parents=True, exist_ok=False)
     runtime = Path(args.runtime).resolve()
@@ -26,9 +30,12 @@ def run(args):
         Path(args.jobs).resolve() / f"tier{args.tier}" / f"episode_{args.episode:06d}"
     )
     env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, (str(project), env.get("PYTHONPATH")))
+    )
     env.update({"XLA_PYTHON_CLIENT_PREALLOCATE": "false", "HYDRA_FULL_ERROR": "1"})
     # Retain the exact launch sources alongside this run's artifacts.
-    for source in (Path(__file__).resolve(), harness):
+    for source in (Path(__file__).resolve(), harness, Path(leaderboard.__file__)):
         shutil.copy2(source, out / f"executed_{source.name}")
     start = time.monotonic()
     status = {
@@ -50,6 +57,7 @@ def run(args):
     }
     write_json(out / "plan.json", status)
     write_json(out / "queue_status.json", status)
+    report_rows = []
     try:
         for variant in ("original", "corrected"):
             entry = {"variant": variant, "state": "training"}
@@ -115,6 +123,19 @@ def run(args):
                     timeout=600,
                 )
             entry["evaluation"] = json.loads(evaluation.read_text())
+            row = leaderboard.leaderboard_row(
+                entry["evaluation"],
+                tier=args.tier,
+                episode=args.episode,
+                variant=variant,
+                training_s=entry["training"].get("elapsed_s"),
+                transitions=args.transitions,
+                reference=status["metric_reference"],
+            )
+            entry["leaderboard"] = leaderboard.write_report(run_dir, [row])
+            report_rows.append(row)
+            leaderboard.write_report(out, report_rows)
+            write_json(out / "queue_status.json", status)
             if args.render_video:
                 entry["state"] = "rendering"
                 write_json(out / "queue_status.json", status)
@@ -122,7 +143,9 @@ def run(args):
                 command = [
                     sys.executable,
                     "-u",
-                    str(runtime / "robotic_grounding/flash_chord/scripts/view_policy.py"),
+                    str(
+                        runtime / "robotic_grounding/flash_chord/scripts/view_policy.py"
+                    ),
                     f"evaluation.checkpoint={checkpoint}",
                     "evaluation.reset_mode=explicit",
                     "viewer.backend=mp4",
@@ -195,7 +218,9 @@ def main():
         or args.checkpoint_interval % 2048
         or min(args.max_seconds, args.evaluation_worlds, args.video_frames) <= 0
     ):
-        parser.error("Positive bounds and a world-aligned checkpoint interval are required")
+        parser.error(
+            "Positive bounds and a world-aligned checkpoint interval are required"
+        )
     run(args)
 
 

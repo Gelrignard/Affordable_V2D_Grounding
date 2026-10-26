@@ -685,10 +685,13 @@ Both policies reached 349,999,104 transitions and the final zero-assistance
 curriculum stage. Full results are in
 `experiments/native_chord_full_results_20261026.json`.
 
-| Tier 1 episode 5 input | Training time | Object-center error | MPPE | ADD-AUC | Native reference success |
+| Tier 1 episode 5 input | AUC ↑ | SP-SR ↑ | MP-SR ↑ | MPPE (cm) ↓ | Training time |
 |---|---|---|---|---|---|
-| Original | 2 h 20 min | 0.2324 m | 23.3374 cm | 0.3184 | 0/16 |
-| Corrected | 2 h 18 min | 0.2846 m | 28.5571 cm | 0.2546 | 0/16 |
+| Original | 0.3184 | 0.0000 | 0.0000 | 23.3374 | 2 h 20 min |
+| Corrected | 0.2546 | 0.0000 | 0.0000 | 28.5571 | 2 h 18 min |
+
+The separate native reference-tracking success diagnostic was 0/16 for both.
+Object-center errors were 0.2324 m and 0.2846 m; those are not MPPE.
 
 These are unassisted evaluations against the tier input reference, with one
 training seed per variant. The corrected input has higher final object error
@@ -711,3 +714,56 @@ The viewer may restart failed episodes; use the separate no-reset evaluation
 reports for quantitative results. Video hashes and render times are recorded in
 the result JSON. The completed-run monitor is paused and the GPU is idle; the
 instance remains powered on.
+
+## Leaderboard-style reporting
+
+Future native pairs and custom evaluations automatically write `leaderboard.json`,
+`leaderboard.csv` and `leaderboard.md`. The cloud status endpoint exposes these
+values separately from assistance rewards and native reference-tracking success.
+Reports use the challenge's column order, four decimal places and 0–1 scales for
+AUC/SP-SR/MP-SR; MPPE is in centimetres. Missing or invalid scores are unavailable,
+not zero. Coverage, evaluation worlds, training time, transitions and reference
+identity remain visible. No rank or full-tier score is inferred from one episode.
+
+The four definitions follow the released Track 2 scoring code:
+
+- AUC integrates ADD accuracy at thresholds 1–9 cm. Local mesh samples are used;
+  the host's hidden sample set is not distributed.
+- SP-SR applies the 10 cm / 0.5 rad thresholds to each world's time-averaged
+  object pose error, without centering or initial alignment.
+- MP-SR requires each object's mean pose error below 3 cm and 30 degrees.
+- MPPE averages errors of six object-frame points at ±5 cm along the axes,
+  over points, bodies, worlds and frames. Native `mean_per_point_error_cm` is
+  used instead of the legacy multi-body maximum in `mppe_cm`.
+
+Numerical tests compare our CPU formulas with the released Kaggle numerical
+functions. The completed native pair's SP-SR, MP-SR and MPPE were also recomputed
+from its saved Parquets without a GPU; MPPE agrees to better than 1e-4 cm. Its
+already saved native AUC is retained. Raw evaluations and checkpoints are unchanged.
+
+Backfill a paired result record without simulation or retraining:
+
+```bash
+python -m training.leaderboard \
+  --results experiments/native_chord_full_results_20261026.json \
+  --output outputs/cloud/native_full_t1_ep5
+```
+
+Custom evaluation also preserves `auc_vertices.npz`, enabling later CPU rescoring
+with exactly its local sample set. A nonfinite world invalidates the local cohort
+score rather than being silently discarded. Tier input references remain distinct
+from the clean references used by official scoring.
+
+## Proposed next learner
+
+The structured design and controlled test sequence are in
+`experiments/chord_dynamics_training_proposal_20261026.json`. It is a proposal;
+no new training or WM fitting has been launched.
+
+Keep native CHORD, frozen SONIC and all body/finger residuals. First isolate a
+DexMachina-inspired competence-based assistance curriculum, then add a robust
+required-wrench target derived from object dynamics and support forces. Corrected
+joint trajectories remain soft priors. Check native PPO against FlashSAC only
+with a shared environment/reward/curriculum contract. An optional shared compact
+WM must pass contact-transition, gradient and total-cost tests before affecting
+the policy. It does not justify resuming the old per-episode full-state WM queue.

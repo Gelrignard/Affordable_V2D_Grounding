@@ -7,6 +7,35 @@ from training.cloud_status import diagnostic_snapshot, snapshot
 
 
 class CloudStatusTests(unittest.TestCase):
+    def test_native_leaderboard_report_is_exposed_separately(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            run = root / "native/original"
+            run.mkdir(parents=True)
+            (root / "native/queue_status.json").write_text(
+                json.dumps(
+                    {
+                        "state": "complete",
+                        "runs": [{"variant": "original", "state": "complete"}],
+                    }
+                )
+            )
+            board = {
+                "rows": [
+                    {
+                        "add_auc": 0.5,
+                        "spider_sr": 0.25,
+                        "maniptrans_sr": 0,
+                        "mppe_cm": 4.0,
+                    }
+                ]
+            }
+            (run / "leaderboard.json").write_text(json.dumps(board))
+            result = diagnostic_snapshot(
+                root, "native/queue_status.json", now=0, alive=False
+            )
+            self.assertEqual(result["runs"][0]["leaderboard"], board)
+
     def test_native_diagnostics_report_failure_and_training_progress_separately(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -229,5 +229,52 @@
         ]
       }
     ]
+  },
+  "leaderboard": {
+    "schema": "v2d_track2_local_leaderboard_v1",
+    "metric_source": "https://nvidia-isaac.github.io/video_to_data/v2d_challenge/",
+    "metric_order": [
+      "add_auc",
+      "spider_sr",
+      "maniptrans_sr",
+      "mppe_cm"
+    ],
+    "rate_scale": "0_to_1",
+    "mppe_unit": "cm",
+    "official_leaderboard_score": false,
+    "scope": "Listed episodes only; no competition rank or 30-episode aggregate is inferred.",
+    "auc_reference": "Local visible-mesh samples; the host's AUC sample set is not supplied.",
+    "rows": [
+      {
+        "tier": 1,
+        "episode": 5,
+        "variant": "original",
+        "add_auc": 0.3184236353439681,
+        "spider_sr": 0.0,
+        "maniptrans_sr": 0.0,
+        "mppe_cm": 23.337422526681888,
+        "world_count": 16,
+        "training_hours": 2.339261723978238,
+        "transitions": 349999104,
+        "metric_reference": "tier1_input_reference",
+        "official_leaderboard_score": false,
+        "checkpoint_sha256": null
+      },
+      {
+        "tier": 1,
+        "episode": 5,
+        "variant": "corrected",
+        "add_auc": 0.2546111665004985,
+        "spider_sr": 0.0,
+        "maniptrans_sr": 0.0,
+        "mppe_cm": 28.557080063325284,
+        "world_count": 16,
+        "training_hours": 2.2995067023299636,
+        "transitions": 349999104,
+        "metric_reference": "tier1_input_reference",
+        "official_leaderboard_score": false,
+        "checkpoint_sha256": null
+      }
+    ]
   }
 }

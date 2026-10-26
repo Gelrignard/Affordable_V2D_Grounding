@@ -463,6 +463,11 @@ def snapshot(root, *, now=None, alive=None):
         )
         if monitor.get("dex_ppo")
         else None,
+        "dex_ppo_full": bounded_test_snapshot(
+            root, monitor["dex_ppo_full"], now=now, script="run_dex_ppo_full.py"
+        )
+        if monitor.get("dex_ppo_full")
+        else None,
         "replay_capacity_refinement": bounded_test_snapshot(
             root,
             monitor["replay_refinement"],

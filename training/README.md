@@ -920,3 +920,27 @@ launched, is `experiments/next_no_wm_training_proposal_20261026.json`.
 This audit did not launch further training or alter any executed experiment.
 Evidence and configuration hashes are in
 `experiments/chord_configuration_input_audit_20261026.json`.
+
+## Dex-inspired PPO continuation (26 October)
+
+The short Dex-inspired native PPO candidate completed 60,014,592 transitions in
+1005.56 training seconds, versus 1494.41 seconds for the saved approximately 60M
+FlashSAC baseline. Its terminal local AUC was 0.1546 and MPPE 47.59 cm, versus
+0.1452 and 61.93 cm. Both had zero SP-SR and MP-SR. This supports a longer test,
+not a claim of successful manipulation. The assistance gate had not advanced.
+
+The user authorized continuation to 350,011,392 total transitions, matching the
+previous full FlashSAC comparison budget. `experiments/dex_ppo_full_20261026.json`
+records the plan. Native PPO's default 20,000 iterations with 4096 worlds and
+24 rollout steps instead total 1.966B transitions. The continuation uses the
+tested 2048-world configuration and restores the complete native learner plus
+curriculum stage and evidence history. Native resume resets simulator state.
+No optimizer, reward, gate or controller setting changes. All approximately 10M
+checkpoints remain; roughly 100/150/200/250/300/350M receive separate unassisted
+evaluation with independently verified leaderboard-style metrics.
+
+CHORD includes both PPO and FlashSAC. PPO uses a fresh 49,152-transition rollout
+batch here, followed by five epochs and four minibatches; it has no rolling 5M
+replay buffer. FlashSAC capacity tests passed 5M through 7M with about 23.3 GiB
+total GPU usage, while 8M encountered CUDA OOM. This establishes observed fit,
+not a learning improvement or enough room for overlapping evaluation.

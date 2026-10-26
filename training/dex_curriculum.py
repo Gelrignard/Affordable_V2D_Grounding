@@ -7,6 +7,8 @@ Only native CHORD stages/reset mixtures change. No learned dynamics are used.
 
 from __future__ import annotations
 
+import copy
+import json
 import math
 from collections import deque
 from dataclasses import asdict, dataclass, replace
@@ -169,3 +171,36 @@ class DexCurriculum:
             "frame_dt": self.frame_dt,
             "stages": [asdict(s) for s in self.stages],
         }
+
+    def load_state_dict(self, state, *, iteration):
+        """Restore the evidence window as well as the assistance stage."""
+        expected = self.state_dict()
+        for key in ("gate", "frame_dt", "stages"):
+            if json.dumps(state[key], sort_keys=True) != json.dumps(
+                expected[key], sort_keys=True
+            ):
+                raise ValueError(f"Resume curriculum configuration differs: {key}")
+        index, last_change = state["index"], state["last_change"]
+        if (
+            type(index) is not int
+            or not 0 <= index < len(self.stages)
+            or type(last_change) is not int
+            or not 0 <= last_change <= iteration
+        ):
+            raise ValueError("Invalid saved curriculum counters")
+        history = state["history"]
+        if len(history) > self.gate.window:
+            raise ValueError("Saved curriculum window exceeds capacity")
+        for sample in history:
+            if set(sample) != {
+                "task",
+                "contact",
+                "imitation",
+                "completion",
+                "progress",
+                "episodes",
+            } or not all(math.isfinite(v) for v in sample.values()):
+                raise ValueError("Invalid saved curriculum evidence")
+        self.index, self.last_change = index, last_change
+        self.history = deque(copy.deepcopy(history), maxlen=self.gate.window)
+        self.decisions = copy.deepcopy(state["decisions"])

@@ -1,4 +1,5 @@
 import dataclasses
+import json
 import unittest
 from types import SimpleNamespace
 
@@ -51,6 +52,28 @@ def observations(c, *, value=0.8, progress=0.99, completion=0.95, count=100):
 
 
 class DexCurriculumTests(unittest.TestCase):
+    def test_resume_preserves_window_and_next_decision(self):
+        uninterrupted = curriculum()
+        for i in range(1, 8):
+            uninterrupted.observe(observations(uninterrupted), i)
+        resumed = curriculum()
+        resumed.load_state_dict(
+            json.loads(json.dumps(uninterrupted.state_dict())), iteration=7
+        )
+        for i in range(8, 17):
+            metrics = observations(uninterrupted, progress=0.1 if i > 12 else 0.99)
+            self.assertEqual(
+                uninterrupted.observe(metrics, i), resumed.observe(metrics, i)
+            )
+        self.assertEqual(uninterrupted.state_dict(), resumed.state_dict())
+
+    def test_resume_rejects_changed_curriculum(self):
+        c = curriculum()
+        state = c.state_dict()
+        state["gate"]["completion_minimum"] = 0.1
+        with self.assertRaisesRegex(ValueError, "configuration differs"):
+            c.load_state_dict(state, iteration=0)
+
     def test_normalized_rewards_advance_only_after_window_and_clear_old_evidence(self):
         c = curriculum()
         for i in range(1, 4):

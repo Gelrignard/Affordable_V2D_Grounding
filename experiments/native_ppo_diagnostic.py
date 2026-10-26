@@ -48,6 +48,22 @@ def run_child(args):
         raise ValueError("Native runtime pin or cleanliness mismatch")
     source = runtime / "robotic_grounding/flash_chord/src"
     sys.path.insert(0, str(source))
+    resume = None
+    prior_elapsed = 0.0
+    if args.resume:
+        checkpoint = Path(args.resume).resolve()
+        resume = json.loads(checkpoint.with_suffix(".experiment.json").read_text())
+        previous = checkpoint.parent.parent
+        provenance = json.loads((previous / "provenance.json").read_text())
+        if (
+            provenance["runtime_commit"] != commit
+            or provenance["method"] != args.method
+            or provenance["job_motion_sha256"] != sha256(job / "motion.parquet")
+            or resume["environment_steps"] != resume["iteration"] * args.worlds * 24
+            or not 0 < resume["iteration"] < args.iterations
+        ):
+            raise ValueError("Resume source, method, worlds or budget mismatch")
+        prior_elapsed = float(resume["training_elapsed_s"])
     urdf_sha = sha256(source / "flash_chord/assets/urdfs/g1/main_with_hand.urdf")
     if urdf_sha not in {
         "8c7f768dc8da6c969d8a4b4efb3dcbe3d9d2b05fca5104df12205a69879d19e9",
@@ -87,6 +103,13 @@ def run_child(args):
         "logging.log_interval=1",
         "logging.upload_checkpoints=false",
     ]
+    if args.resume:
+        overrides.extend(
+            [
+                "training.resume=true",
+                f"training.checkpoint={json.dumps(str(checkpoint))}",
+            ]
+        )
     entry = source.parent / "scripts/train_rl.py"
     spec = importlib.util.spec_from_file_location("native_chord_ppo_entry", entry)
     native = importlib.util.module_from_spec(spec)
@@ -98,6 +121,14 @@ def run_child(args):
 
     class LocalMetrics:
         def __init__(self, config, **kwargs):
+            if resume:
+                old_config = json.loads((previous / "training_config.json").read_text())
+                new_config = json.loads(json.dumps(dataclasses.asdict(config)))
+                for key in ("max_iterations", "save_interval", "resume", "checkpoint"):
+                    old_config.pop(key, None)
+                    new_config.pop(key, None)
+                if old_config != new_config:
+                    raise ValueError("Resume changes native learner configuration")
             self.stream = (out / "metrics.jsonl").open("w", buffering=1)
             context["logger"] = self
             write_json(out / "training_config.json", dataclasses.asdict(config))
@@ -108,6 +139,7 @@ def run_child(args):
             iteration = step // (args.worlds * 24)
             curriculum = context["curriculum"]
             metrics = dict(metrics)
+            context["last_assistance"] = metrics.get("curriculum/voc_scale")
             metrics["episode/completed_count_per_iteration"] = float(
                 context["episode_count"]
             )
@@ -119,7 +151,8 @@ def run_child(args):
                     {
                         "time_utc": utc_now(),
                         "transitions": step,
-                        "training_elapsed_s": elapsed,
+                        "training_elapsed_s": prior_elapsed + elapsed,
+                        "session_elapsed_s": elapsed,
                         **metrics,
                     },
                     allow_nan=False,
@@ -132,7 +165,8 @@ def run_child(args):
                     "state": "training",
                     "transitions": step,
                     "iteration": iteration,
-                    "training_elapsed_s": elapsed,
+                    "training_elapsed_s": prior_elapsed + elapsed,
+                    "session_elapsed_s": elapsed,
                     "assistance_scale": metrics.get("curriculum/voc_scale"),
                     "throughput": metrics.get("throughput/env_steps_per_second"),
                     "learning_rate": metrics.get("ppo/learning_rate"),
@@ -149,7 +183,9 @@ def run_child(args):
                 {
                     "iteration": iteration,
                     **metadata,
-                    "training_elapsed_s": time.monotonic() - context["started"],
+                    "training_elapsed_s": prior_elapsed
+                    + time.monotonic()
+                    - context["started"],
                     "method": args.method,
                     "curriculum_state": curriculum.state_dict() if curriculum else None,
                 },
@@ -160,6 +196,32 @@ def run_child(args):
                 self.stream.close()
 
     native.WandbLogger = LocalMetrics
+    original_load = runner.load_checkpoint
+
+    def checked_load(path, template):
+        learner, metadata = original_load(path, template)
+        if int(learner.iteration) != resume["iteration"]:
+            raise ValueError("Restored learner iteration disagrees with sidecar")
+        write_json(
+            out / "resume_validation.json",
+            {
+                "iteration": int(learner.iteration),
+                "environment_steps": int(metadata["environment_steps"]),
+                "learning_rate": float(learner.learning_rate),
+                "checkpoint_sha256": sha256(Path(path)),
+                "sidecar_sha256": sha256(Path(path).with_suffix(".experiment.json")),
+                "all_learner_leaves_restored": True,
+                "curriculum_state_restored": context["curriculum"].state_dict()
+                == resume["curriculum_state"]
+                if context["curriculum"]
+                else True,
+                "native_environment_reset_on_resume": True,
+            },
+        )
+        return learner, metadata
+
+    if resume:
+        runner.load_checkpoint = checked_load
     original_iteration = runner.train_iteration
 
     def captured_iteration(env, learner, config):
@@ -181,6 +243,10 @@ def run_child(args):
             context["curriculum"] = DexCurriculum(
                 config.curriculum, frame_dt=env.frame_dt
             )
+            if resume:
+                context["curriculum"].load_state_dict(
+                    resume["curriculum_state"], iteration=resume["iteration"]
+                )
             config = dataclasses.replace(config, curriculum=context["curriculum"])
             write_json(
                 out / "dex_curriculum_spec.json", context["curriculum"].state_dict()
@@ -206,7 +272,7 @@ def run_child(args):
         active = config.curriculum.stages[
             config.curriculum.stage_index(max(iteration - 1, 0))
         ]
-        metadata["voc_scale"] = active.voc_scale
+        metadata["voc_scale"] = context.get("last_assistance", active.voc_scale)
         path = out / "checkpoints" / f"model_{iteration}.safetensors"
         runner.save_checkpoint(path, learner, metadata=metadata)
         context["logger"].log_checkpoint(path, iteration=iteration, metadata=metadata)
@@ -218,7 +284,13 @@ def run_child(args):
                 "stop_reason": stop_reason,
                 "iterations": iteration,
                 "transitions": metadata["environment_steps"],
-                "training_elapsed_s": time.monotonic() - context["started"],
+                "training_elapsed_s": prior_elapsed
+                + time.monotonic()
+                - context["started"],
+                "session_elapsed_s": time.monotonic() - context["started"],
+                "resumed_from_transitions": resume["environment_steps"]
+                if resume
+                else 0,
                 "checkpoint": str(path),
                 "method": args.method,
                 "world_model": False,
@@ -235,6 +307,7 @@ def run_child(args):
             "method": args.method,
             "learner": "native_CHORD_PPO",
             "world_model": False,
+            "resume_checkpoint": str(checkpoint) if resume else None,
             "overrides": overrides,
             "upstream_entry_sha256": sha256(entry),
             "job_motion_sha256": sha256(job / "motion.parquet"),
@@ -355,6 +428,7 @@ def main():
     p.add_argument("--job", required=True)
     p.add_argument("--output", required=True)
     p.add_argument("--method", choices=("native_ppo", "dex_ppo"), required=True)
+    p.add_argument("--resume", help="Native learner checkpoint with experiment sidecar")
     p.add_argument("--worlds", type=int, default=2048)
     p.add_argument("--iterations", type=int, default=1221)
     p.add_argument("--save-interval", type=int, default=204)

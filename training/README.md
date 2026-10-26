@@ -836,9 +836,13 @@ speedup. Full rows, timings and terminal diagnostics are preserved in
 
 The audit of all four cloud-saved configurations (the earlier native 350M pair
 and these two candidates) confirms identical optimizer, network, action and
-simulation settings. Learning rate is 3e-4 to 1.5e-4 over the unchanged native
-350M horizon, with four updates per collection and an actor update every second
-optimizer update. Control is 50 Hz with four physics substeps. Replay capacity
+simulation settings. The configured learning-rate range is 3e-4 to 1.5e-4,
+with the unchanged native 683,592-update horizon, four updates per collection
+and an actor update every second optimizer attempt. Actor and critic use
+separate clocks: the saved 350M checkpoint has 682,772 optimizer attempts and
+341,386 actor attempts, so its next critic rate is about 1.50e-4 and its actor
+rate about 2.25e-4. The 30M candidate rates remain about 2.974e-4 and 2.993e-4.
+Control is 50 Hz with four physics substeps. Replay capacity
 is 2M rather than the native recipe's 10M. The candidates additionally change
 the curriculum, early frame-zero starts and stopping rule; only the wrench
 candidate changes the objective. No world model or PPO was used.
@@ -860,8 +864,18 @@ Two input-contract findings limit the comparison with correction replay:
 
 The correction replay additionally uses a supported pelvis and observed-force
 feedback; importing position references does not transfer that controller.
-Before another learner comparison, identify the same artifact and establish
-timing, support, controller and scoring parity with a zero-learned-residual
-physical baseline. This audit did not launch further training or alter any
-executed experiment. Evidence and configuration hashes are in
+The user clarified that the trajectory remains useful for learning and its
+strict upstream acceptance flag is not a training eligibility gate. The
+upstream SOMA/G1 exporter also defaults to 30 fps without resampling; our
+50 Hz source-frame playback matches the released G1 trainer. This timing
+difference from local correction replay is therefore not an established
+explanation of the score gap to NVIDIA.
+
+The next proposed test keeps that input and native timing, and uses native
+CHORD PPO with its KL-adaptive learning rate and a DexMachina-style
+reward/completion assistance curriculum with recovery. The v1 pelvis-reference
+probe gate is not carried over. The bounded proposal, which has not been
+launched, is `experiments/next_no_wm_training_proposal_20261026.json`.
+This audit did not launch further training or alter any executed experiment.
+Evidence and configuration hashes are in
 `experiments/chord_configuration_input_audit_20261026.json`.

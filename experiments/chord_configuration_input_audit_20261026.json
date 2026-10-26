@@ -182,7 +182,7 @@
     "Candidates use adaptive assistance, earlier frame-zero starts, and a 60M cap/30M no-advance stop.",
     "Only adaptive_wrench adds the dynamics reward."
   ],
-  "learning_rate_note": "Both full native runs and both truncated candidates keep the 349999104-transition (683592-update) horizon; the 30M result is not a fully annealed short run.",
+  "learning_rate_note": "Native actor, critic, and temperature have separate scheduler clocks, each using the same 683592-update horizon. Actor/temperature advance on every second optimizer attempt. Thus the actor reaches about 2.25e-4 at 350M, not the configured 1.5e-4 floor. The truncated 30M runs retain nearly initial rates.",
   "input_provenance": {
     "tier": 1,
     "episode_index": 5,
@@ -213,15 +213,37 @@
       "flash_chord/data/motion_v1.py:273-312",
       "flash_chord/envs/base.py:55-67",
       "flash_chord/runtime/actions/sonic.py:222-233"
-    ]
+    ],
+    "upstream_followup": "The pinned soma_to_g1 exporter defaults to 30fps, writes fps=args.fps, and does not resample. Native G1 source-frame playback also preserves frame count and reinterprets playback at 50Hz. Our behavior matches that released configuration; this is not an established difference explaining the NVIDIA score gap.",
+    "upstream_producer": "https://github.com/nvidia-isaac/video_to_data/blob/8c778f905cb35f76f8e6cd6e2ea486da4fb9e0ef/robotic_grounding/scripts/retarget/soma_to_g1.py"
   },
   "replay_comparison_limits": [
     "The upstream correction replay uses a supported pelvis and observed-force controller; position-reference import does not include that feedback controller.",
     "Need to identify the same input artifact and match timing, support, control, and scoring before attributing replay-to-policy degradation to an optimizer."
   ],
-  "proposed_next_controlled_check": "Establish exact artifact/controller/timing parity and a zero-learned-residual physical baseline. Then isolate DexMachina-style action priors and reward/episode-completion curriculum with recovery, leaving optimizer comparisons separate. No new experiment launched by this audit.",
+  "proposed_next_controlled_check": "Keep the same corrected reference and native 50Hz playback. Profile native CHORD PPO, then test DexMachina-style reward/completion assistance with recovery and KL-adaptive PPO. Compare unassisted time-to-score against preserved FlashSAC checkpoints. This is proposed only; no new experiment is running.",
   "dexmachina_sources": [
     "https://arxiv.org/html/2505.24853v1",
     "https://github.com/MandiZhao/dexmachina/blob/main/dexmachina/envs/curriculum.py"
-  ]
+  ],
+  "followup_utc": "2026-10-26T17:07:39.798140+00:00",
+  "user_clarification": "The corrected trajectory is a useful learning reference. Strict correction acceptance is an upstream rigor check, not a training eligibility gate or an explanation of downstream failure.",
+  "checkpoint_counter_audit": {
+    "method": "Read scalar leaves directly from saved safetensors using its JSON manifest; global_update_step is the last TrainingCheckpoint field. Actor attempt count follows native actor_update_period=2. Rates calculated at saved scheduler clocks, before any subsequent update.",
+    "native_corrected_350M": {
+      "environment_steps": 349999104,
+      "optimizer_attempts": 682772,
+      "actor_attempts": 341386,
+      "critic_learning_rate_next": 0.00015000053255474768,
+      "actor_learning_rate_next": 0.00022514131809169008
+    },
+    "adaptive_30M": {
+      "environment_steps": 30001152,
+      "optimizer_attempts": 57776,
+      "actor_attempts": 28888,
+      "critic_learning_rate_next": 0.000297371675623371,
+      "actor_learning_rate_next": 0.0002993400150381772
+    },
+    "interpretation": "These count attempted updates/scheduler ticks, not only successfully applied finite gradients. Replay-capacity turnover is unrelated to gradient-update count."
+  }
 }

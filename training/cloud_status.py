@@ -257,8 +257,19 @@ def bounded_test_snapshot(root, relative, *, now, script, alive=None):
                 activity.append(item.stat().st_mtime)
     age = max(0, now - max(activity))
     state = queue.get("state")
+    hold = read_json(path.parent / "queue_hold.json")
+    intentional_hold = bool(
+        hold
+        and hold.get("queue_pid") == queue.get("pid")
+        and hold.get("reason") == "isolated_capacity_refinement"
+        and process_alive(
+            hold.get("refinement_pid"), script="refine_replay_capacity.py"
+        )
+    )
     if state in ("running", "waiting_for_capacity") and not running:
         state = "stopped_without_exit_record"
+    elif state == "running" and intentional_hold:
+        state = "waiting_for_capacity_refinement"
     elif state == "running" and age > 600:
         state = "possibly_stalled"
     return {
@@ -266,6 +277,7 @@ def bounded_test_snapshot(root, relative, *, now, script, alive=None):
         "path": str(path),
         "process_alive": running,
         "activity_age_s": age,
+        "intentional_hold": hold if intentional_hold else None,
         "elapsed_s": queue.get("elapsed_s"),
         "active": queue.get("active"),
         "error": queue.get("error"),
@@ -452,7 +464,10 @@ def snapshot(root, *, now=None, alive=None):
         if monitor.get("dex_ppo")
         else None,
         "replay_capacity_refinement": bounded_test_snapshot(
-            root, monitor["replay_refinement"], now=now, script="refine_replay_capacity.py"
+            root,
+            monitor["replay_refinement"],
+            now=now,
+            script="refine_replay_capacity.py",
         )
         if monitor.get("replay_refinement")
         else None,

@@ -1,5 +1,11 @@
 # Policy training after trajectory correction
 
+## Current teammate entry point
+
+Use **[POLICY_HANDOFF.md](../docs/training/POLICY_HANDOFF.md)** for native environment setup and the unattended `python -m training.policy_pipeline` / `python -m training.policy_batch` commands. The fixed pipeline uses 4M GPU replay and native FlashSAC, then precision refinement, complete unassisted evaluation, deterministic checkpoint selection and fixed-world submission export. It does not run a separate CHORD comparison. [POLICY_METHOD.md](../docs/training/POLICY_METHOD.md) explains the changes and measured results.
+
+The sections below preserve earlier experiments, including host replay and custom learner paths. They are not the production launch instructions. The older `training/Dockerfile` is also a historical custom-learner environment; use the native setup in the current handoff.
+
 ## Native FlashSAC with 10M replay in system RAM
 
 The user authorized a real 10M replay comparison after the corrected Tier 1

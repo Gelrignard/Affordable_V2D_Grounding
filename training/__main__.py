@@ -21,7 +21,7 @@ def parser():
     prepare.add_argument("--bundle", required=True)
     prepare.add_argument("--urdf", required=True)
     prepare.add_argument("--output", required=True)
-    prepare.add_argument("--tier", type=int, choices=[1, 2])
+    prepare.add_argument("--tier", type=int, choices=[1, 2, 3])
     prepare.add_argument("--episode", type=int)
     prepare.add_argument("--all", action="store_true")
     prepare.add_argument(
@@ -284,7 +284,7 @@ def main(argv=None):
             pairs = [
                 (e["tier"], e["episode_index"])
                 for e in index["entries"]
-                if e["tier"] in (1, 2)
+                if e["tier"] in (1, 2, 3)
             ]
         else:
             if args.tier is None or args.episode is None:

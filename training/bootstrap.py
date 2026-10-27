@@ -55,7 +55,7 @@ def bootstrap(destination, download_assets=False):
             "--exclude=",
         )
     print(
-        f"Pinned runtime: {path}\nInstall base runtime dependencies and PyTorch separately; no training started."
+        f"Pinned runtime: {path}\nFollow docs/training/POLICY_HANDOFF.md for the native environment; no training started."
     )
 
 

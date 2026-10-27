@@ -94,6 +94,13 @@ After each candidate, diagnose the first remaining failure and change one focuse
 - Read-only installed JAX0.10.2 parser confirms the fraction was accepted; no competing modern fraction, unified memory, allocator or XLA flag overrides were present. Native source contains no fraction override. Both attempts grow to about18815MiB before compilation, then23883MiB afterward. A repeated memory bucket is an explanation to investigate, not yet a confirmed cause. Add allocator telemetry before any further resource change.
 - Downloaded and hash-verified the original best parent policy AND153MiB compact state into this isolated checkout's `outputs/overnight_best/`. PolicySHA `1ff07c00361ffbeb7edc41f0aba23dbebc9eadc7c74aa40fa7e0cff6fdfc8722`; stateSHA `1eae67b3272adf75eba9ecfbbb6f21a22bd1b8d76db8df1f6d44cb820e21fd07`. Preserve both as the rollback pair.
 
+### 03:00 New York — allocator diagnosis measured
+
+- Bounded single-collection diagnostic `candidate1_memory_diagnosis`, guardPID472458/learner472466, source `ec709b593c1c2e376e603f145a6e3b3c94524380`. Common ledger charges this startup as `smoke`; it collected only2048 transitions and performed no learning. Its complete launch/config/hash manifest and staged telemetry are preserved remotely.
+- `memory_stages.jsonl` shows JAX pool **17465081856 bytes** with only **9247339520 bytes live** after compilation. JAX limit was18947768320bytes, confirming.75 was honored. Warp pool use remained1390348506bytes. First environment step raises totalGPU use18835→23871MiB while both tracked pools stay unchanged. That additional allocation's owner is not yet established; do not label it a JAX allocation or claim a proven ONNX cause.
+- Lower outer JAX fraction to **.60** to clip its oversized pool to about15158214656bytes, preserving more than5GB beyond observed JAX live usage while reclaiming about2.15GiB of reservation. Keep4M replay and23000MiB total guard. This follows measured allocation data; optimizer-update peak and sustained GPU behavior still need validation.
+- Next full screen is `candidate1_screen_retry3` from the same evaluated parent, using a new immutable source commit and the same ledger. All prior training attempts were below the fresh replay warmup threshold and did not change learned weights.
+
 ## Next action for the scheduled continuation
 
 1. Inspect `bootstrap_status.json`, `ledger.json`, live processes and the old queue status. While old work continues, do not launch a GPU job. Do not rerun bootstrap or mutate its deployed source. Stay quiet for unchanged state.

@@ -170,7 +170,7 @@ def run(args):
         env = os.environ.copy()
         env.update(PYTHONUNBUFFERED='1', V2D_OVERNIGHT_GUARD='1',
                    XLA_PYTHON_CLIENT_PREALLOCATE='false',
-                   XLA_PYTHON_CLIENT_MEM_FRACTION='0.75',
+                   XLA_PYTHON_CLIENT_MEM_FRACTION='0.60',
                    OMP_NUM_THREADS='4', OPENBLAS_NUM_THREADS='4')
         env.pop('XLA_PYTHON_CLIENT_ALLOCATOR', None)
         started = time.monotonic()

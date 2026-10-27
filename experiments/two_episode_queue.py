@@ -93,8 +93,8 @@ def verify_episode_inputs(episode):
         raise ValueError("Bootstrap configuration hash mismatch")
     config = read_json(config_path)
     motion = Path(config["task"]["parquet"]).resolve()
-    source_rows = pq.read_table(job / "motion.parquet").to_pylist()
-    runtime_rows = pq.read_table(motion).to_pylist()
+    source_rows = pq.ParquetFile(job / "motion.parquet").read().to_pylist()
+    runtime_rows = pq.ParquetFile(motion).read().to_pylist()
     if len(source_rows) != 1 or len(runtime_rows) != 1:
         raise ValueError("Expected one motion row per episode")
     source_row, runtime_row = source_rows[0], runtime_rows[0]

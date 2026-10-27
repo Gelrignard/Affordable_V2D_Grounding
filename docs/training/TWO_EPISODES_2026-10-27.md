@@ -25,3 +25,9 @@ The detached queue validates both input bundles and committed source hashes befo
 - Episode18 archive SHA256 `265b559c253e2fe55ffd578b61039a30ad6ce0ea19791e20edec4a8f1f0ce12a`; verify after upload before extraction.
 - Episode16 uses the existing remote portable bundle; preparation verifies all job file hashes.
 - Status before launch: preparation and input transfer only. Append committed source, launch PIDs and startup verification once available.
+
+## Deployment and preflight correction
+
+Source2f6db5396841e3ff76720a4e6787fe3182a00e20 was committed and SHA-verified remotely; all79 affected tests passed in the pinned cloud environment with CUDA hidden. Both episode manifests and the episode18 archive match their local hashes; native typed configuration preparation passed. The initial plan SHA is075274d164ea426b221a0311f5640f5c376e3ed232012fa4d25e7d276330f503.
+
+The first queue supervisor532337 started14:24:13UTC but stopped during preflight before any GPU allocation or ledger creation: PyArrow read_table interpreted the Hive-shaped runtime directory as a dataset and tried to merge a dictionary partition key with a string column. Corrected verification to use single-file ParquetFile reads, matching the pinned native loader. The focused input regression now uses the actual sequence_id=.../robot_name=g1 directory shape; all6queue tests passed. Preserve failed launch/status/log and original plan, then deploy the committed correction and a new immutable plan within the same trial root and unchanged budget.

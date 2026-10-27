@@ -105,7 +105,10 @@ class TwoEpisodeQueueTests(unittest.TestCase):
             files["motion.parquet"] = queue.file_hash(job / "motion.parquet")
             metadata = {key: e[key] for key in ["episode_index", "tier", "sequence_id", "source_frames"]}
             (job / "job.json").write_text(json.dumps({**metadata, "variant": "corrected", "files": files}))
-            runtime = root / "runtime_motion.parquet"
+            # Native materialization uses Hive-shaped folders, but this is one
+            # file: dataset discovery would merge string/dictionary sequence IDs.
+            runtime = root / f"sequence_id={e['sequence_id']}" / "robot_name=g1" / "motion.parquet"
+            runtime.parent.mkdir(parents=True)
             rebased = {**source, "object_mesh_paths": [str(job / "assets/object.obj")],
                        "object_urdf_paths": [str(job / "assets/object.urdf")]}
             pq.write_table(pa.Table.from_pylist([rebased]), runtime)

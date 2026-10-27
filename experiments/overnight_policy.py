@@ -295,6 +295,52 @@ def run_child(args):
     context = {}
     child_started = time.monotonic()
 
+    def memory_snapshot(stage, learner=None, **details):
+        """Best-effort telemetry after native device setup; never alter allocators."""
+        record = {"time_utc": utc_now(), "elapsed_s": time.monotonic() - child_started,
+                  "stage": stage, **details}
+        try:
+            record["gpu"] = gpu_memory()
+        except Exception as exc:
+            record["gpu_error"] = f"{type(exc).__name__}: {exc}"
+        try:
+            device = jax.devices()[0]  # Native setup has initialized JAX before these hooks.
+            stats = device.memory_stats()
+            record["jax_device"] = str(device)
+            record["jax_memory_stats"] = None if stats is None else {
+                key: value.item() if isinstance(value, np.generic) else value
+                for key, value in stats.items()
+            }
+        except Exception as exc:
+            record["jax_error"] = f"{type(exc).__name__}: {exc}"
+        try:
+            import warp as wp
+            device = context["env"].env.device
+            pool = {"device": str(device)}
+            for name in ("get_mempool_used_mem_current", "get_mempool_used_mem_high",
+                         "get_mempool_release_threshold"):
+                try:
+                    pool[name] = int(getattr(wp, name)(device))
+                except Exception as exc:
+                    pool[name + "_error"] = f"{type(exc).__name__}: {exc}"
+            record["warp_mempool"] = pool
+        except Exception as exc:
+            record["warp_error"] = f"{type(exc).__name__}: {exc}"
+        if learner is not None:
+            try:
+                # Metadata only: do not materialize replay on the host or retain
+                # learner buffers beyond this call. This is logical array size.
+                arrays = jax.tree.leaves(learner.replay)
+                record["replay_array_count"] = len(arrays)
+                record["replay_logical_array_bytes"] = sum(int(value.nbytes) for value in arrays)
+            except Exception as exc:
+                record["replay_error"] = f"{type(exc).__name__}: {exc}"
+        try:
+            with (output / "memory_stages.jsonl").open("a") as stream:
+                stream.write(json.dumps(record, allow_nan=False) + "\n")
+        except Exception as exc:
+            print(f"Memory telemetry unavailable at {stage}: {type(exc).__name__}: {exc}", flush=True)
+
     def request_stop(signum, _frame):
         stop["reason"] = f"signal_{signal.Signals(signum).name}"
 
@@ -313,6 +359,7 @@ def run_child(args):
                       "training_elapsed_s": time.monotonic() - child_started, **metrics}
             self.stream.write(json.dumps(record, allow_nan=False) + "\n")
             write_json(output / "progress.json", record)
+            memory_snapshot("metrics_log", environment_steps=step)
 
         def log_checkpoint(self, paths, *, environment_steps, metadata):
             record = {"time_utc": utc_now(), "environment_steps": environment_steps,
@@ -331,13 +378,16 @@ def run_child(args):
 
     def recorded_run(env, config, **kwargs):
         context.update(env=env, config=config, kwargs=kwargs)
+        memory_snapshot("scene_ready")
         return original_run(env, config, **kwargs)
 
     native.run_training = recorded_run
     original_restore = runner.restore_learner_checkpoint
 
     def checked_restore(path, learner, **kwargs):
+        memory_snapshot("restore_before", learner)
         restored, info = original_restore(path, learner, **kwargs)
+        memory_snapshot("restored_before_parity", restored)
         actor, _ = load_actor_checkpoint(policy, actor_inference_state(restored))
         leaves_a, structure_a = jax.tree.flatten(actor)
         leaves_b, structure_b = jax.tree.flatten(actor_inference_state(restored))
@@ -363,6 +413,7 @@ def run_child(args):
         write_json(output / "warmstart_parity.json", parity)
         if not equal or difference != 0 or replay_size != 0:
             raise ValueError(f"Warm-start parity failed: {parity}")
+        memory_snapshot("restored_after_parity", restored)
         return restored, info
 
     runner.restore_learner_checkpoint = checked_restore
@@ -387,13 +438,22 @@ def run_child(args):
     def bounded_compile(executables, learner, **kwargs):
         if stop["reason"]:
             save_and_stop(learner)
+        memory_snapshot("compile_before", learner)
         compiled = original_compile(executables, learner, **kwargs)
+        memory_snapshot("compile_after", learner)
         if stop["reason"]:
             save_and_stop(learner)
+        first_consume = True
         def consume(*values):
+            nonlocal first_consume
             if stop["reason"]:
                 save_and_stop(values[0])
+            if first_consume:
+                memory_snapshot("first_consume_before", values[0])
             result = compiled.consume_transition(*values)
+            if first_consume:
+                memory_snapshot("first_consume_after", result[0])
+                first_consume = False
             if stop["reason"]:
                 save_and_stop(result[0])
             return result

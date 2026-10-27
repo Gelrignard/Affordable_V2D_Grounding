@@ -86,6 +86,14 @@ After each candidate, diagnose the first remaining failure and change one focuse
 - Read-only checkpoint byte comparison found only reward-normalizer, exploration, RNG and environment-step leaves changed during that single warmup collection; all actor/critic/target/temperature parameters and optimizer states were unchanged. Parent and stopped checkpoint both report682772 updates. Disk available16.176GiB.
 - Audited the restored optimizer schedule: critic learning rate remains at its1.5e-4 floor; actor is about2.2514e-4 and would decay to about2.0532e-4 over60M additional transitions. Retain clocks, moments and horizon; this screen is not using a vanishing learning rate.
 
+### 02:50–02:57 New York — memory setting did not resolve startup
+
+- Retry2 source commit `5140d106ace195e085d2f5b35ea3f6e03d669b14`, archive SHA256 `67c47d84e8681d9c0df06db55b430f104096f75d7370992cb0429744e712f0f2`. All29 relevant CPU tests passed locally and remotely. Bootstrap PID469320, learner469331; both now exited.
+- The startup recovery gate verified177 protected state tensors and all deployable actor tensors unchanged in retry1. Its report is `candidate1_screen_retry2_failed_startup_verification.json`.
+- Retry2 again hit the memory guard at **23883MiB**, despite provenance confirming4M replay and JAX fraction.75. It stopped cleanly after121.107 seconds with38912 fresh warmup transitions, below409600 replay minimum. No training result exists yet; do not call the method successful or report it as running.
+- Read-only installed JAX0.10.2 parser confirms the fraction was accepted; no competing modern fraction, unified memory, allocator or XLA flag overrides were present. Native source contains no fraction override. Both attempts grow to about18815MiB before compilation, then23883MiB afterward. A repeated memory bucket is an explanation to investigate, not yet a confirmed cause. Add allocator telemetry before any further resource change.
+- Downloaded and hash-verified the original best parent policy AND153MiB compact state into this isolated checkout's `outputs/overnight_best/`. PolicySHA `1ff07c00361ffbeb7edc41f0aba23dbebc9eadc7c74aa40fa7e0cff6fdfc8722`; stateSHA `1eae67b3272adf75eba9ecfbbb6f21a22bd1b8d76db8df1f6d44cb820e21fd07`. Preserve both as the rollback pair.
+
 ## Next action for the scheduled continuation
 
 1. Inspect `bootstrap_status.json`, `ledger.json`, live processes and the old queue status. While old work continues, do not launch a GPU job. Do not rerun bootstrap or mutate its deployed source. Stay quiet for unchanged state.

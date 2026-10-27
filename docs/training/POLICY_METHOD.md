@@ -24,9 +24,9 @@ policy. It is not one policy trained to solve every episode.
 The 4090 memory adaptation primarily reduces replay capacity from 10M to 4M,
 disables JAX preallocation, uses memory fraction 0.60, and monitors total device
 memory against 23,000 MiB. Batch size and world count remain 2,048, matching this
-pinned native recipe. This avoids claiming a batch-size reduction that is not
-present in the final configuration. The measured successful runs use roughly
-21–22 GiB and around 40–55k environment transitions/s after compilation.
+pinned native recipe. The replay capacity reduction preserves the native batch size and world count.
+Actual memory use, throughput and convergence depend on the episode and GPU;
+the pipeline records these values and enforces its configured bounds.
 
 ## Why the hand change matters
 
@@ -79,14 +79,13 @@ from these executed transitions. The native force-closure term encourages useful
 contact geometry/capability; the refined tracking objective rewards the resulting
 object trajectory. This is physics-based policy learning, not kinematic replay.
 
-The winning precision recipe does not add an explicit residual between required
+The precision recipe does not add an explicit residual between required
 object wrench and feasible hand/support forces. It does not solve a friction-cone
-force projection or jointly optimize a trajectory and its forces. Those belong
-to the separate [dynamics proposal](../../experiments/chord_dynamics_training_proposal_20261026.json)
-and [coupled correction work](../correction/COUPLED_HORIZON.md). Improved simulator
-rollouts do not by themselves validate those additional contributions.
+force projection or jointly optimize a trajectory and its forces. These are separate possible dynamics objectives, rather than claims made by this
+implementation. A successful simulator rollout does not certify a noisy reference
+or an upstream correction as dynamically feasible.
 
-## Provenance and observed evidence
+## Method sources and scope
 
 CHORD supplies the reference-tracking formulation and contact-capability ideas;
 its whole-body path explicitly uses a reduced force-closure objective for noisy
@@ -99,18 +98,15 @@ recipe from one paper.
 - [FlashSAC](https://arxiv.org/abs/2604.04539)
 - [Native implementation](https://github.com/nvidia-isaac/video_to_data/tree/8c778f905cb35f76f8e6cd6e2ea486da4fb9e0ef/robotic_grounding/flash_chord)
 
-The two completed transfer episodes used this same refinement recipe. Episode 16
-used an additional 30M continuation; episode 18 selected a saved 40M checkpoint.
-All results below are complete 16-world unassisted local evaluations, not submitted
-leaderboard scores or a hardware-matched reproduction of published CHORD numbers.
 
-| Tier 1 episode | Initial native MPPE→selected MPPE | MP-SR→selected MP-SR | Total training time |
-|---|---|---|---|
-| 16, spray bottle | 61.62→2.31 cm | 0/16→15/16 | 9,783.67 s, 2.72 h |
-| 18, trash-can drag | 8.36→4.06 cm | 5/16→14/16 | 10,109.05 s, 2.81 h |
+The combination of object-relative hand shaping, precision reward and recovery
+thresholds is an empirical modification of the native method. It is not an exact
+reproduction of a separate paper. Per-episode evaluations diagnose the resulting
+policy; they do not establish generalization across the full challenge.
 
-Both initial acquisition and refinement are included in those training times.
-All evaluation/midpoint costs bring the complete two-episode trial to 5.61 GPU
-wall-hours. Episode 16 still has brief recovered excursions; episode 18 still has
-two failure tails. A production queue uses a fixed checkpoint-ranking rule rather
-than the research pilot's manual diagnosis/selection.
+The implementation is in `training/core/refinement.py`; configuration assembly
+and checkpoint-name compatibility are in `training/core/configuration.py`.
+`training/evaluate/policy.py` records uninterrupted simulation trajectories,
+`training/evaluate/metrics.py` computes local input-reference diagnostics, and
+`training/evaluate/score_clean_reference.py` applies the pinned official CPU
+metrics against clean references after input-only coordinate conversion.

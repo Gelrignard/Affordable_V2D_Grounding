@@ -1,0 +1,13 @@
+{
+  "worlds": 2048,
+  "replay_capacity": 4000000,
+  "optimizer_horizon": 683592,
+  "bootstrap_steps": 349999104,
+  "refinement_steps": 90000000,
+  "checkpoint_interval": 10000000,
+  "evaluation_seconds": 300,
+  "evaluator_child_seconds": 240,
+  "supervision_reserve": 60,
+  "training_budget_seconds": 10800,
+  "total_budget_seconds": 11700
+}

@@ -31,7 +31,7 @@ from correction.src.optimization.surface_reference import PhaseTiming,build_refe
 from correction.src.optimization.manipulation_sequence import ContactPhase,union_channels
 from correction.src.optimization.actuator_force_profile import allocate_profile
 from correction.src.optimization.command_smoothing import refine_commands
-from correction.scripts.compare_g1_controllers import assessed
+from correction.src.dynamics.replay_assessment import assessed
 from correction.src.pass_traj.experiment_record import snapshot_sources,process_cost
 
 

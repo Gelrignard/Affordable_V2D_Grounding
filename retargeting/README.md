@@ -12,16 +12,12 @@ From the workspace root, using the installed CPU environment:
 ```text
 python retargeting/scripts/run.py --export-parquet
 python retargeting/scripts/visualize_viser.py
-python -m unittest discover -s retargeting/tests -v
 ```
 
 The viewer is at http://127.0.0.1:8081. Select `baseline` or `contact_aware`,
 scrub frames, and use **Focus on hands**. Cyan is the human, orange the targets,
 magenta the robot fingertips, and green inferred object contact anchors. Red
 lines show target-to-FK residuals. Object playback is prescribed, not simulated.
-
-Historical `outputs/local_ik.npz` is a local regression artifact, excluded from
-Git. Its regression test skips when that artifact is absent.
 
 For a faster development comparison:
 
@@ -47,7 +43,6 @@ src/v2d_retarget/dataprocessing/ HumanMotion, source adapters and coordinates
 src/v2d_retarget/core/           targets, contact inference, IK, diagnostics
 src/v2d_retarget/output/         JSON/NPZ and NVIDIA motion_v1 export
 configs/                        explicit contact/solver parameters
-tests/                          geometry, timing, export, baseline regressions
 outputs/                        ignored generated artifacts
 ```
 

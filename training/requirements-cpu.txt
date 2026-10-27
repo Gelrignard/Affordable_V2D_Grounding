@@ -5,4 +5,3 @@ scipy==1.18.0; python_version >= '3.12'
 pyarrow==24.0.0
 trimesh==4.12.2
 usd-core==26.5
-torch==2.8.0

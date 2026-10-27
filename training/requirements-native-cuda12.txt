@@ -1,8 +1,8 @@
 # Constraints for the native FlashSAC CUDA 12 setup plan, not a standalone installer.
 # Effective versions measured on Linux x86_64 / CPython 3.12.3 / driver 570.124.04.
-# Use: python -m training.setup_policy_runtime --help
+# Use: python -m training.scripts.setup_runtime --help
 # ONNX Runtime must come from Microsoft's CUDA 12 feed, in a separate step.
-# Native FlashCHORD uses JAX/Warp/ONNX; legacy Torch training is a separate setup.
+# Native FlashCHORD uses JAX/Warp/ONNX.
 jax==0.10.2
 jaxlib==0.10.2
 jax-cuda12-plugin==0.10.2

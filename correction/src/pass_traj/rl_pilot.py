@@ -93,7 +93,8 @@ def export_pilot(root, output):
                 source=src/'correction'/name
                 if source.exists():shutil.copy2(source,out/name)
             shutil.copy2(src/'correction/report.json',out/'correction_report.json')
-            shutil.copy2(src/'prepare_report.json',out/'preparation_report.json')
+            if (src/'prepare_report.json').is_file():
+                shutil.copy2(src/'prepare_report.json',out/'preparation_report.json')
             shutil.copy2(src/'human_motion.npz',out/'human_motion_source.npz')
             shutil.copy2(str(raw['object_mesh']),assets/'object.glb')
             shutil.copy2(smeta['support_surface'],assets/'support.usda')
@@ -118,9 +119,9 @@ def export_pilot(root, output):
         dataset_source='https://huggingface.co/datasets/nvidia/video_to_data_challenge',
         dataset_license='CC-BY-4.0; preserve source attribution; robot dependencies supplied separately')
     (output/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
-    shutil.copy2('docs/correction/RL_HANDOFF_2026-10-24.md',output/'METHOD_AND_RL_HANDOFF.md')
-    shutil.copy2('docs/correction/RL_PILOT_ARTIFACT_FORMAT.md',output/'README.md')
-    shutil.copy2('docs/correction/PAIRED_PILOT_RUN_2026-10-24.md',output/'RUN_REPORT.md')
-    shutil.copy2(root/'prepared_input_audit.json',output/'prepared_input_audit.json')
-    shutil.copy2(root/'batch_summary.json',output/'batch_summary.json')
+    workspace=Path(__file__).resolve().parents[3]
+    shutil.copy2(workspace/'docs/correction/PIPELINE.md',output/'METHOD_AND_RL_HANDOFF.md')
+    shutil.copy2(workspace/'docs/correction/RL_PILOT_ARTIFACT_FORMAT.md',output/'README.md')
+    for name in ('prepared_input_audit.json','batch_summary.json'):
+        if (root/name).is_file():shutil.copy2(root/name,output/name)
     print(json.dumps(entries,indent=2),flush=True)

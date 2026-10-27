@@ -1,3 +1,4 @@
+# Environments, downloaded dependencies, and credentials.
 .retarget-env/
 .soma-env/
 .tools/
@@ -14,31 +15,72 @@ venv/
 **/kaggle.json
 *.pem
 *.key
+
+# Datasets and generated artifacts.
 outputs/
-retargeting/outputs/
 data/
 weights/
 checkpoints/
 logs/
 wandb/
 node_modules/
-.ruff_cache/
-/preview-installed-packages.txt
-/scripts/check_preview.cjs
-/correction/scripts/check_viewer.cjs
-/correction/scripts/capture_book.cjs
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
 
-# Local experiment runners and generated test reports are not public source.
-# Reusable src/, scripts/, and tests/ remain versioned.
-/correction/local_experiments/
-/experiments/local/
+# Private experiments, tests, execution records, and local launchers.
+/experiments/
+/reconstruction/
+/.vscode/
+**/tests/
+**/test/
+**/test_*.py
 /test-results/
-
-# Machine-specific convenience launchers are local, not public entry points.
+/correction/examples/
+/correction/local_experiments/
+/preview-installed-packages.txt
 /retarget.ps1
-/correction/scripts/run.ps1
 /preview.ps1
+/scripts/check_preview.cjs
+/correction/scripts/run.ps1
+/correction/scripts/check_viewer.cjs
+/correction/scripts/capture_book.cjs
+/data_tools/tier1_diagnostic.py
+
+# Public correction entry points; other local trial scripts stay private.
+/correction/scripts/*.py
+!/correction/scripts/__init__.py
+!/correction/scripts/correct_rl_pilot_episode.py
+!/correction/scripts/export_rl_pilot.py
+!/correction/scripts/validate_rl_pilot.py
+!/correction/scripts/prepare_phase.py
+!/correction/scripts/run_phase.py
+!/correction/scripts/demo.py
+
+# Retired local training implementations and configurations.
+/training/*.py
+!/training/__init__.py
+!/training/__main__.py
+/training/web/
+/training/CLOUD_PILOT.md
+/training/SUPERMIMIC_REUSE.md
+/training/.dockerignore
+/training/configs/4090_full_chord_curriculum.json
+/training/configs/4090_pilot.json
+/training/configs/full_two.json
+/training/configs/rl_pilot_two.json
+
+# Public guides are maintained separately from local research notes.
+/docs/COMPUTE_AND_IMPLEMENTATION_HANDOFF.md
+/docs/LITERATURE_REFERENCES.md
+/docs/LITERATURE_REVIEW.md
+/docs/PARALLEL_WORK.md
+/docs/correction/*.md
+!/docs/correction/PIPELINE.md
+!/docs/correction/INTEGRATION.md
+!/docs/correction/RL_PILOT_ARTIFACT_FORMAT.md
+/docs/training/*.md
+!/docs/training/POLICY_HANDOFF.md
+!/docs/training/POLICY_METHOD.md

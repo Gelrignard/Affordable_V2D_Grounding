@@ -1,15 +1,6 @@
-# Paired pilot artifact format
+# Episode artifact format
 
-Schema: `v2d_rl_pilot_v1`. These are experimental references for comparing
-downstream policy learning, not certified demonstrations or challenge submissions.
-Read the root `manifest.json` first. Its twelve entries identify tier, episode,
-status, reference availability and the hash of each episode manifest.
-`RUN_REPORT.md` and `batch_summary.json` describe this batch's actual results;
-the method handoff alone does not certify these automatically generated cases.
-
-The same six episode IDs occur in both tiers. Keep them paired when comparing
-noise sensitivity. Do not replace a failed corrected case with a successful
-different episode. Use explicit fallback/ablation labels instead.
+Schema: `v2d_rl_pilot_v1`. The schema name is retained for compatibility. These portable references carry source provenance, stage status, and physical validation status. Read the root and episode manifests before loading arrays. Generated reports and trajectories are external artifacts.
 
 ## Episode directory
 
@@ -79,18 +70,16 @@ Current recordings are approximately 30 Hz plus interval impulse/peak audits;
 they are not complete 1 kHz action-transition datasets. A learned world model
 needs a logger matched to its control timestep and actual executed actions.
 
-## Suggested first downstream check
+## Downstream validation
 
 1. Read a single episode manifest, verify hashes and full-frame correspondence.
 2. Recompute palm FK in the training robot and check mapping/units against the
    supplied `ee_pose_w`; use the supplied object/support assets.
 3. Choose an explicit action/controller contract. Position-only targets discard
    planned preload unless the learner/controller separately uses the force goal.
-4. Compare original and corrected references under identical policy training.
-   Keep object-task reward, observation/action interface and evaluation fixed;
-   label any added force reward or teacher controller as a separate ablation.
-5. Report official task performance and total compute, including failed cases.
+4. Run the [automatic policy pipeline](../training/POLICY_HANDOFF.md) on the prepared episode.
+5. Report task performance and total compute, retaining failed rollouts.
 
 The local replay fixes/supports the lower body and uses prototype object
 properties. Its RMS errors are diagnostics, not official evaluation scores.
-Whole-body policy execution and simulator parity remain downstream work.
+Whole-body policy execution uses the separate pinned training runtime.

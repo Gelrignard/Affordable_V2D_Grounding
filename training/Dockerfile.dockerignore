@@ -1,0 +1,15 @@
+**
+!training/
+!training/Dockerfile
+!training/__init__.py
+!training/__main__.py
+!training/requirements-native-cuda12.txt
+!training/core/
+!training/core/*.py
+!training/scripts/
+!training/scripts/*.py
+!training/scripts/container_entrypoint.sh
+!training/evaluate/
+!training/evaluate/*.py
+!training/configs/
+!training/configs/policy.json

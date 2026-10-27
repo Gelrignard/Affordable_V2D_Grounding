@@ -1,6 +1,6 @@
 # Automatic policy training handoff
 
-Run this from a clean clone of `main`. One prepared episode job goes through validation, policy acquisition, precision refinement, full unassisted evaluation, deterministic checkpoint selection and trajectory export without an agent or manual processing decision. `training.policy_batch` runs the same command over a stable episode roster and splits it across machines using disjoint shard indices.
+Run this from a clean clone of `main`. One prepared episode job goes through validation, policy acquisition, precision refinement, full unassisted evaluation, deterministic checkpoint selection and trajectory export without an agent or manual processing decision. `training.scripts.batch` runs the same command over a stable episode roster and splits it across machines using disjoint shard indices.
 
 ## Inputs and environment
 
@@ -12,23 +12,23 @@ python -m training prepare --bundle /data/portable_bundle \
   --output /data/jobs --all --variants corrected
 ```
 
-The policy command consumes these artifacts; video reconstruction and upstream correction have their own entry points. Tier 3 jobs require a reconstructed reference and an explicit mapping into the released coordinate frame. No clean target is supplied to policy training or checkpoint selection.
+The policy command consumes these prepared artifacts. Tier 3 jobs require precomputed motion and an explicit mapping into the released coordinate frame. No clean target is supplied to policy training or checkpoint selection.
 
 Training runs on Linux with one GPU per worker. Clone this repository and obtain the pinned native runtime and its assets:
 
 ```bash
-git clone https://github.com/Gelrignard/scalable_v2d.git
-cd scalable_v2d
+git clone https://github.com/Gelrignard/Affordable_V2D_Grounding.git
+cd Affordable_V2D_Grounding
 git checkout main
-python -m training.bootstrap --runtime /opt/v2d-runtime --download-assets
+python -m training.scripts.bootstrap --runtime /opt/v2d-runtime --download-assets
 ```
 
-Git LFS is required for the upstream G1 meshes and SONIC weights. Runtime commit: `8c778f905cb35f76f8e6cd6e2ea486da4fb9e0ef`. The native environment setup described below uses the measured CUDA 12 package set on the tested 4090 driver, or the official frozen CUDA 13 environment on a compatible newer driver. Do not use the historical custom-learner Dockerfile or mix a Torch environment into native FlashSAC.
+Git LFS is required for the upstream G1 meshes and SONIC weights. Runtime commit: `8c778f905cb35f76f8e6cd6e2ea486da4fb9e0ef`. The native environment setup below supports the pinned CUDA 12 package set or the official frozen CUDA 13 environment on a compatible driver. Native FlashSAC uses JAX, Warp and ONNX Runtime.
 
 Generate and run the installation commands on the destination Linux host:
 
 ```bash
-python -m training.setup_policy_runtime --runtime /opt/v2d-runtime \
+python -m training.scripts.setup_runtime --runtime /opt/v2d-runtime \
   --venv /opt/v2d-policy-env --profile cuda12 --driver-major 570 \
   > /tmp/v2d-native-setup.sh
 bash -e /tmp/v2d-native-setup.sh
@@ -46,24 +46,24 @@ For Tier 3, the upstream reconstruction adapter must provide `episode_XXXXXX.npz
 {"schema":"v2d_track2_input_frames_v1","tier":3,"coordinate_frame":"released_track2_world","files":{"episode_000005.npz":"<NPZ SHA256>"},"episodes":{"5":{"sequence_id":"<job sequence_id>","object_names":["<released object name>"],"source_sha256":"<job source_sha256>"}}}
 ```
 
-The exporter checks the complete reference transform against `reference.npz`; it never chooses a camera alignment or uses a clean target. This prepared Tier 3 interface has synthetic official-reader/conversion tests. The current real transfer experiments cover Tier 1/2.
+The exporter checks the complete reference transform against `reference.npz`; it never chooses a camera alignment or uses a clean target. The input adapter must establish this mapping upstream; the exporter validates the full trajectory and fails if the mapping is unavailable or inconsistent.
 
 ## One episode, one command
 
 Run in the native environment, from this repository's root:
 
 ```bash
-python -m training.policy_pipeline \
+python -m training.scripts.pipeline \
   --job /data/jobs/tier2/episode_000003/corrected \
   --runtime /opt/v2d-runtime \
   --output /runs/tier2/episode_000003 \
   --training-budget-seconds 10800 --total-budget-seconds 11700 \
-  --deadline-utc 2026-10-29T03:00:00Z \
+  --deadline-utc "$DEADLINE_UTC" \
   --dataset-input /data/inputs/tier2 \
   --submission-kit /opt/v2d_submission_kit
 ```
 
-Set an actual future UTC deadline for your run. `--prepare-only` runs the same CPU preflight without GPU training. Supply `--parent-state /path/state_N.safetensors` only when reusing a compatible native checkpoint for this exact episode; the command verifies its configuration, trajectory, assets, counters and policy pair. Otherwise acquisition starts from seed 42 with native SONIC and the original assistance curriculum. This acquisition is part of learning the policy; it does not run a separate baseline evaluation.
+Set `DEADLINE_UTC` to the actual future ISO8601 UTC deadline for your run before invoking the command. `--prepare-only` runs the same CPU preflight without GPU training. Supply `--parent-state /path/state_N.safetensors` only when reusing a compatible native checkpoint for this exact episode; the command verifies its configuration, trajectory, assets, counters and policy pair. Otherwise acquisition starts from seed 42 with native SONIC and the original assistance curriculum. This acquisition is part of learning the policy; it does not run a separate baseline evaluation.
 
 Omitting both export arguments produces selected policies and evaluation evidence only. Supplying both includes the official-format trajectory export in successful completion.
 
@@ -83,10 +83,10 @@ Defaults retain 2,048 worlds and batch size 2,048, 4M GPU replay, JAX memory fra
 Preview the exact roster without GPU work:
 
 ```bash
-python -m training.policy_batch \
+python -m training.scripts.batch \
   --jobs /data/jobs --runtime /opt/v2d-runtime --output /runs/shard_0 \
   --shard-index 0 --shard-count 3 --require-complete \
-  --gpu-hours 97.5 --deadline-utc 2026-11-01T00:00:00Z \
+  --gpu-hours 97.5 --deadline-utc "$DEADLINE_UTC" \
   --dataset-root /data/inputs --submission-kit /opt/v2d_submission_kit \
   --dry-run
 ```
@@ -114,7 +114,7 @@ Repeat the identical command to verify and reuse completed stages. Completed epi
 The per-episode export preserves checkpoint and evaluator provenance. Collect finished shards with one CPU command, which verifies manifests and copies only official trajectory Parquets, without choosing checkpoints or worlds:
 
 ```bash
-python experiments/export_policy_rollout.py \
+python -m training.evaluate.export \
   --collect-runs /runs/shard_0 /runs/shard_1 /runs/shard_2 \
   --kit /opt/v2d_submission_kit --output-dir /results/collected
 ```
@@ -125,10 +125,10 @@ The collection manifest reports missing episodes and provides packing command te
 python /opt/v2d_submission_kit/tools/pack_submission.py \
   --track track_2_tier2 --results /results/collected/tier2 \
   --dataset-root /data/challenge --frame-references /data/inputs/tier2 \
-  --code-commit "https://github.com/Gelrignard/scalable_v2d/commit/$(git rev-parse HEAD)" \
+  --code-commit "https://github.com/Gelrignard/Affordable_V2D_Grounding/commit/$(git rev-parse HEAD)" \
   -o /results/track2_tier2.csv
 ```
 
 Use `track_2_tier1` / `track_2_tier3` and their corresponding input-frame references for the other tiers. Clean-reference scoring happens after policy/checkpoint/world selection is fixed. The CPU packaging command does not retrain, choose checkpoints, change trajectories or upload the CSV.
 
-See [POLICY_METHOD.md](POLICY_METHOD.md) for the scientific changes and measured transfer results. The historical pilot logs retain the agent diagnoses that motivated this fixed production recipe.
+See [POLICY_METHOD.md](POLICY_METHOD.md) for the objective, curriculum, dynamics and evaluation contracts. The public package contains reusable processing code; run outputs and local investigation logs are not part of it.

@@ -11,7 +11,7 @@ The CPU prototype was tested against commit
 `193382a184308f6800331f3db829f76dc4294cfe`. The published submission kit inspected
 on 17 October identified a different evaluation version,
 `8c778f905cb35f76f8e6cd6e2ea486da4fb9e0ef`; prepare a separate evaluation runtime
-as described in the [implementation handoff](COMPUTE_AND_IMPLEMENTATION_HANDOFF.md).
+as described in the [policy runtime handoff](training/POLICY_HANDOFF.md).
 
 ## What the patch changes
 

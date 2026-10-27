@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from experiments.run_flash_sac_host_10m import validate
+from experiments.run_flash_sac_host_10m import optimizer_health, validate
 
 
 class HostReplayGateTests(unittest.TestCase):
@@ -87,6 +87,17 @@ class HostReplayGateTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "guard"):
             self.check()
+
+    def test_native_isolated_critic_backoff_requires_recovery(self):
+        normal = {"sac/actor_skipped_fraction": 0, "sac/critic_skipped_fraction": 0}
+        backoff = {**normal, "sac/critic_skipped_fraction": 0.005}
+        self.assertEqual(
+            optimizer_health([normal, backoff, normal])["isolated_critic_skip_windows"],
+            1,
+        )
+        for rows in ([normal, backoff], [backoff, backoff, normal]):
+            with self.assertRaises(ValueError):
+                optimizer_health(rows)
 
 
 if __name__ == "__main__":

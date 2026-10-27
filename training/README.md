@@ -28,11 +28,20 @@ replay; it does not restore simulator state. No full replay snapshot is saved.
 
 `experiments/run_flash_sac_host_10m.py` refuses a full run until current source
 hashes match successful parity and real 10M fill/rollover profiles. The profile
-must use 2048 worlds and batch 2048, have no skipped updates, and sustain at
+must use 2048 worlds and batch 2048, pass optimizer-health checks, and sustain at
 least 21k transitions/s over its last 20 logged samples (under 4.63h projected
 training, plus setup, within a five-hour session cap). The full comparison
 starts fresh at 349,999,104 transitions with native settings; typed learner
 config and trajectory hashes are checked against the saved 2M baseline.
+
+The initial zero-skipped-update launch gate was corrected after inspecting the
+native baselines: both GPU baselines and the 10M host profile had eight isolated
+critic-update backoffs in the first 10.5M transitions. This is native dynamic
+loss scaling, followed by successful updates, not a host-replay-specific failure.
+The gate rejects actor skips, critic skip fractions above 0.005001 per log window,
+consecutive skip windows, nonfinite metrics, or a final skip without recovery.
+The native loss scale and optimizer settings are unchanged; the GPU parity
+tests retain their original strict tolerances.
 
 Every approximately 10M policy checkpoint is kept. To avoid filling the disk,
 only the latest two compact optimizer states and the 60/100/150/200/250/300M

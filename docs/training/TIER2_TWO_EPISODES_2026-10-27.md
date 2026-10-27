@@ -35,4 +35,8 @@ The existing heartbeat is changed to every30minutes. Delegate routine inspection
 
 ## Launch record
 
-Pending source commit, remote CPU preflight and verified launch. Do not infer a running job from this document alone.
+Committed execution source54e2a7ceef0e7558208e3eb4e77950aa7d60ffaa. Deployment archive SHA256dbdd68d6a46c4866ed740b64e18530bf37721bd7ebcd5d1ac8875996019d8f2e; portable input archive SHA25623e654e90976b23e5826bf28868c0a732677bd3c131ab4fddde0f4505d5529e2. Both archives were verified before extraction. Both actual Tier2 inputs/configs passed CPU-only preflight, and91 affected pinned-native CPU tests passed. CUDA was hidden during preparation/tests.
+
+Immutable remote plan.json SHA2560978985aa8d55b62f84399defeec8bc0bc894687928f4cb7bf6460bb5f9576d9. Local verified plan/config copies, preparation/test logs and launch evidence are under outputs/tier2_two_episode_deployment. Native config hashes: episode3 b8121f8b905a827a109b1e56a613191bbe939fb13bb90842a8f3c4008a1c87ca; episode25 90edc789153317282d9ce18ceb499e6e3e2e965ad28f3fee96b113c7d53ec944.
+
+Detached supervisor633626 launched2026-10-27T20:15:47.565332Z. Earlier Tier1 episode16 continuation was complete, all its phase PIDs were dead, GPU compute processes were absent, and6.9GB disk space was available before this launch. The new queue runs episode3 then25; inspect queue_status.json and live PIDs to establish its current state. Never duplicate or restart it. The heartbeat now checks every30minutes through03:30UTC; it must pause after the final report. Startup learner progress verification follows separately.

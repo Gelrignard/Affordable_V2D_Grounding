@@ -114,11 +114,17 @@ def exclusive_lock(path):
 def stop_child(proc, grace_seconds):
     if proc.poll() is not None:
         return
-    os.killpg(proc.pid, signal.SIGTERM)
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
     try:
         proc.wait(timeout=max(0.1, grace_seconds))
     except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         proc.wait()
 
 
@@ -151,6 +157,8 @@ def run(args):
                 raise RuntimeError('Deadline approached while waiting for other work')
             time.sleep(min(30, max(1, args.wait_seconds - (time.monotonic() - waited))))
         allowed = min(allowed, deadline - time.time())
+        if allowed < 60:
+            raise RuntimeError('Insufficient wall/calendar budget after waiting')
         output = Path(args.output).resolve()
         output.mkdir(parents=True, exist_ok=False)
         job = {'name': args.name, 'candidate': args.candidate, 'kind': args.kind,
@@ -199,7 +207,8 @@ def run(args):
             job['state'] = 'failed'
             job['error'] = f'{type(exc).__name__}: {exc}'
             if proc is not None:
-                stop_child(proc, max(0.1, min(30, deadline - time.time())))
+                stop_child(proc, max(0.1, min(30, deadline - time.time(),
+                                            allowed - (time.monotonic() - started))))
             raise
         finally:
             for s, handler in old_handlers.items():

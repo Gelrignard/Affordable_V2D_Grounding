@@ -13,6 +13,7 @@ from experiments.overnight_policy import (
     OPTIMIZER_HORIZON,
     build_config,
     checkpoint_pair,
+    checkpoint_stage_metadata,
     deadline_timestamp,
     signal_child,
     transition_budget,
@@ -118,6 +119,13 @@ class OvernightPolicyTests(unittest.TestCase):
             signal_child(123, 15, shared_group=False)
             grouped.assert_called_once_with(123, 15)
             direct.assert_not_called()
+
+    def test_graceful_checkpoint_contains_native_evaluator_stage_metadata(self):
+        cfg = self.build()
+        metadata = checkpoint_stage_metadata(cfg["curriculum"], 40_001_536)
+        self.assertEqual(metadata["curriculum_stage"], 10)
+        self.assertEqual(metadata["voc_scale"], 0)
+        self.assertEqual(metadata["immediate_first_frame_probability"], .5)
 
     def test_mismatched_policy_state_pair_rejected_without_tensor_loading(self):
         with tempfile.TemporaryDirectory() as directory:

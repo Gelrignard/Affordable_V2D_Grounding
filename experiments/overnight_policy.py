@@ -227,6 +227,16 @@ def signal_child(pid, signum, *, shared_group):
         os.killpg(pid, signum)
 
 
+def checkpoint_stage_metadata(curriculum, environment_steps):
+    index = min(bisect.bisect_right(curriculum["thresholds"], environment_steps), len(curriculum["stages"]) - 1)
+    stage = curriculum["stages"][index]
+    metadata = {"curriculum_stage": index, "voc_scale": stage["voc_scale"]}
+    for name in ("reset_to_first_frame_probability", "immediate_first_frame_probability"):
+        if stage.get(name) is not None:
+            metadata[name] = stage[name]
+    return metadata
+
+
 def run_child(args):
     from training import RUNTIME_COMMIT
     from training.bundles import sha256
@@ -353,11 +363,13 @@ def run_child(args):
         jax.block_until_ready(learner.global_update_step)
         steps = int(jax.device_get(learner.environment_steps))
         info = dict(context["kwargs"]["checkpoint_metadata"])
+        stage_info = checkpoint_stage_metadata(cfg["curriculum"], steps)
         info.update(environment_steps=steps, global_update_step=int(jax.device_get(learner.global_update_step)),
                     voc_scale=0.0, replay_included=False, overnight_stop_reason=stop["reason"])
+        info.update(stage_info)
         paths = runner.save_learner_checkpoint(output / "checkpoints", learner, metadata=info, save_replay=False)
         context["kwargs"]["logger"].log_checkpoint(paths, environment_steps=steps,
-                                                   metadata={"voc_scale": 0.0, "stop_reason": stop["reason"]})
+                                                   metadata={**stage_info, "stop_reason": stop["reason"]})
         write_json(output / "graceful_stop.json", {"reason": stop["reason"], "environment_steps": steps,
                                                    "policy": str(paths.policy), "saved_utc": utc_now()})
         raise ControlledStop(stop["reason"])

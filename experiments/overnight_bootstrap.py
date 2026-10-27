@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -92,7 +93,8 @@ def main():
         if status_file.exists():
             raise RuntimeError('Bootstrap has already been invoked; inspect existing state before any retry')
         status = {'state': 'waiting_for_existing_queue', 'started_utc': utc_now(),
-                  'source_commit': args.source_commit, 'source': str(SOURCE), 'arguments': vars(args)}
+                  'pid': os.getpid(), 'source_commit': args.source_commit,
+                  'source': str(SOURCE), 'arguments': vars(args)}
         write_json(status_file, status)
         try:
             while True:
@@ -100,6 +102,8 @@ def main():
                 status.update(wait_reason=reason, updated_utc=utc_now())
                 write_json(status_file, status)
                 if ready:
+                    if deadline - time.time() < 45 * 60:
+                        raise RuntimeError('Insufficient remaining time for first screen; no GPU work started')
                     break
                 if deadline - time.time() < 45 * 60:
                     raise RuntimeError('Insufficient remaining time for first screen; no GPU work started')

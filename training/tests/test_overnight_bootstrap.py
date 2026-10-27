@@ -7,7 +7,7 @@ import struct
 import tempfile
 import unittest
 
-from experiments.overnight_bootstrap import eligible_sources, verify_parent_repeat
+from experiments.overnight_bootstrap import eligible_sources, verify_parent_repeat, verify_unlearned_startup, file_hash
 
 
 def source_run(root, name, step, auc, *, mppe=5.0, assistance=0.0, missing_state=False):
@@ -155,6 +155,107 @@ class ParentRepeatTests(unittest.TestCase):
                     actual["leaderboard"]["scores"][metric] = value
                     with self.assertRaises(RuntimeError):
                         verify_parent_repeat(expected, actual)
+
+
+def write_tensors(path, values, *, updates=100, env_steps=2048):
+    raw = path.read_bytes()
+    metadata = json.loads(raw[8:8 + struct.unpack('<Q', raw[:8])[0]])['__metadata__']
+    metadata.update({'user.global_update_step': str(updates), 'user.environment_steps': str(env_steps)})
+    manifest, tensors, payload = [], {}, bytearray()
+    formats = {'F32': 'f', 'I32': 'i', 'U32': 'I'}
+    for i, (dtype, shape, data) in enumerate(values):
+        key = f'state.{i:04d}'
+        encoded = struct.pack('<' + formats[dtype] * len(data), *data)
+        tensors[key] = {'dtype': dtype, 'shape': shape or [1], 'data_offsets': [len(payload), len(payload) + len(encoded)]}
+        payload.extend(encoded)
+        manifest.append({'key': key, 'shape': shape, 'dtype': {'F32': '<f4', 'I32': '<i4', 'U32': '<u4'}[dtype]})
+    metadata['manifest'] = json.dumps(manifest)
+    header = json.dumps({'__metadata__': metadata, **tensors}).encode()
+    path.write_bytes(struct.pack('<Q', len(header)) + header + payload)
+
+
+class UnlearnedStartupTests(unittest.TestCase):
+    def fixture(self, root):
+        from training import RUNTIME_COMMIT
+        _, parent_policy = source_run(root, 'parent', 2048, .8)
+        _, failed_policy = source_run(root, 'failed', 4096, .8)
+        parent_state = parent_policy.with_name('state_2048.safetensors')
+        failed_state = failed_policy.with_name('state_4096.safetensors')
+        protected = [('F32', [2], [i + .25, i + .5]) for i in range(7)]
+        tail = [('F32', [2], [0., 0.]), *[('F32', [], [1.])] * 4,
+                ('F32', [2, 2], [0., 0., 0., 0.]), ('I32', [], [0]), ('I32', [], [0]),
+                ('F32', [], [1.]), ('I32', [], [0]), ('U32', [2], [1, 2]),
+                ('F32', [], [0.]), ('I32', [], [2048]), ('I32', [], [100])]
+        values = protected + tail
+        write_tensors(parent_state, values)
+        policy = [('F32', [2], [1., 2.])]
+        write_tensors(parent_policy, policy)
+        failed_values = copy.deepcopy(values)
+        failed_values[-14] = ('F32', [2], [4., 5.])
+        failed_values[-4] = ('U32', [2], [7, 8])
+        failed_values[-2] = ('I32', [], [4096])
+        write_tensors(failed_state, failed_values, env_steps=4096)
+        write_tensors(failed_policy, policy, env_steps=4096)
+        output = root / 'attempt'
+        output.mkdir()
+        documents = {
+            'latest_checkpoint.json': {'state': str(failed_state), 'policy': str(failed_policy), 'environment_steps': 4096},
+            'provenance.json': {'runtime_commit': RUNTIME_COMMIT, 'replay_is_fresh': True,
+                                'source_state': str(parent_state), 'source_state_sha256': file_hash(parent_state),
+                                'source_policy_sha256': file_hash(parent_policy)},
+            'warmstart_parity.json': {'parameter_exact_match': True, 'deterministic_action_max_abs_error': 0.,
+                                     'fresh_replay_size': 0, 'environment_steps': 2048, 'global_update_step': 100},
+            'resolved_config.json': {'training': {'replay': {'minimum_size': 10000}}},
+        }
+        for name, data in documents.items():
+            (output / name).write_text(json.dumps(data))
+        return parent_state, output, failed_state, failed_policy, failed_values
+
+    def test_allows_only_unchanged_learning_state_with_warmup_changes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            parent, output, failed, _, _ = self.fixture(Path(folder))
+            before_hash = file_hash(failed)
+            report = verify_unlearned_startup(parent, output)
+            self.assertTrue(report['verified_zero_learning'])
+            self.assertEqual(report['additional_transitions_discarded'], 2048)
+            self.assertEqual(report['global_update_step'], 100)
+            self.assertEqual(len(report['changed_discarded_warmup_leaves']), 3)
+            self.assertEqual(file_hash(failed), before_hash)
+
+    def test_refuses_any_changed_model_optimizer_target_or_clock_leaf(self):
+        for index in (*range(7), -6, -5, -1):
+            with self.subTest(index=index), tempfile.TemporaryDirectory() as folder:
+                parent, output, failed, _, values = self.fixture(Path(folder))
+                dtype, shape, data = values[index]
+                values[index] = (dtype, shape, [data[0] + 1, *data[1:]])
+                write_tensors(failed, values, env_steps=4096)
+                with self.assertRaisesRegex(RuntimeError, 'protected'):
+                    verify_unlearned_startup(parent, output)
+
+    def test_refuses_changed_policy_even_if_state_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as folder:
+            parent, output, _, policy, _ = self.fixture(Path(folder))
+            write_tensors(policy, [('F32', [2], [2., 3.])], env_steps=4096)
+            with self.assertRaisesRegex(RuntimeError, 'deployable actor'):
+                verify_unlearned_startup(parent, output)
+
+    def test_refuses_changed_update_metadata(self):
+        with tempfile.TemporaryDirectory() as folder:
+            parent, output, failed, _, values = self.fixture(Path(folder))
+            write_tensors(failed, values, updates=101, env_steps=4096)
+            with self.assertRaisesRegex(RuntimeError, 'global_update_step'):
+                verify_unlearned_startup(parent, output)
+
+    def test_refuses_warmup_boundary_or_nonfresh_replay(self):
+        for filename, modification in (
+            ('resolved_config.json', {'training': {'replay': {'minimum_size': 2048}}}),
+            ('warmstart_parity.json', {'parameter_exact_match': True, 'deterministic_action_max_abs_error': 0., 'fresh_replay_size': 1}),
+        ):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as folder:
+                parent, output, _, _, _ = self.fixture(Path(folder))
+                (output / filename).write_text(json.dumps(modification))
+                with self.assertRaises(RuntimeError):
+                    verify_unlearned_startup(parent, output)
 
 
 if __name__ == "__main__":

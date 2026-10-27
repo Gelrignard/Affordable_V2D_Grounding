@@ -1,4 +1,4 @@
-"""Bounded warm starts with zero training VOC in the native FlashSAC learner.
+"""Bounded native FlashSAC warm starts with fresh 4M GPU replay and zero training VOC.
 
 Training and evaluation are separate processes. This command never evaluates a
 checkpoint while its training allocation is resident. The outer overnight
@@ -30,7 +30,7 @@ if str(ROOT) not in sys.path:
 from experiments.native_chord_diagnostic import gpu_memory, utc_now, write_json
 
 WORLDS = 2048
-REPLAY_CAPACITY = 5_000_000
+REPLAY_CAPACITY = 4_000_000
 OPTIMIZER_HORIZON = 683592
 MAX_PHASE_SECONDS = 7200
 
@@ -160,6 +160,7 @@ def build_config(saved, *, state, output, start, end, phase, checkpoint_interval
         cfg["objective"][name + "_weight"] = weight
     cfg["overnight"] = {"phase": phase, "refinement_start_steps": ramp_start,
                         "fresh_replay": True, "optimizer_horizon": OPTIMIZER_HORIZON,
+                        "replay_capacity": REPLAY_CAPACITY, "replay_backend": "gpu",
                         "recovery_reset_assistance": phase == "refine"}
     cfg["curriculum"] = curriculum
     training = cfg["training"]
@@ -266,6 +267,10 @@ def run_child(args):
         "source_environment_steps": start, "additional_transition_cap": additional,
         "absolute_transition_cap": end, "optimizer_horizon": OPTIMIZER_HORIZON,
         "replay_capacity": REPLAY_CAPACITY, "replay_is_fresh": True,
+        "source_replay_capacity": saved["training"]["replay"].get("capacity"),
+        "replay_backend": "gpu", "memory_limit_mib": args.memory_limit_mib,
+        "jax_memory_fraction": os.environ.get("XLA_PYTHON_CLIENT_MEM_FRACTION"),
+        "jax_preallocate": os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE"),
         "replay_warmup_action": cfg["training"]["exploration"]["warmup_action"],
         "source_replay_warmup_action": saved["training"].get("exploration", {}).get("warmup_action", "uniform"),
         "phase": args.phase, "created_utc": utc_now(), "harness_sha256": sha256(__file__),

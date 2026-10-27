@@ -75,6 +75,17 @@ After each candidate, diagnose the first remaining failure and change one focuse
 - Recovery bootstrap PID **465551**, native training PID **465560**, started **06:30:24 UTC**. **Do not duplicate this worker.** `bootstrap_recovery_launch.json` records the exact command with `--resume-parent-evaluation`; old failed state is preserved as `bootstrap_previous_*.json`. Current status is `training_first_screen`. Native scene initialization is underway; actor parity/first optimizer updates remain to be checked.
 - Parent first object-threshold violations occur at frames **746–750** across all16 worlds, confirming the handover remains the primary target. Parent handover730–850 MPPE **21.366 cm**, final200 MPPE **53.487 cm**. Full parent traces are in `parent_evaluation/`.
 
+### 02:38–02:45 New York — startup repairs and memory adjustment
+
+- First training attempt stopped after 60.095 seconds before learning: Python 3.12 runtime protocol checks require explicit wrapper properties. Fixed and committed in `7cf933f6912ff73a275e30ec19996ba77395e882`; 26 affected native CPU tests passed. This is an integration repair within candidate1.
+- Retry1 (bootstrap PID466027, learner PID466036) passed exact restored actor parameter/action parity and native SAC compilation. The memory guard stopped it at **23885 MiB** after **125.044 seconds**. It collected only2048 transitions into fresh replay; the saved global update count remains682772. Keep this failed attempt and its checkpoint in `candidate1_screen_retry1/`.
+- Total charged time before retry2 is **230.153 seconds**: parent evaluation45.015, first failed startup60.095, second failed startup125.044. Both workers have exited; GPU was idle at inspection. The original10M queue remains complete.
+- Native source inspection found one replay allocation. The previous5M run also reached about23887MiB under its higher guard, and an older4M startup reached that allocator high-water mark. Replay reduction alone is insufficient to guarantee headroom with the existing allocator settings.
+- Adjust candidate1 to **4M fresh GPU replay** and outer JAX memory fraction **.75** (from.84), preallocation false; keep the **23000MiB guard**. Ring storage saves about2146MiB. This is a resource adjustment, not evidence of training improvement; actual GPU initialization and learning must pass before leaving it unattended.
+- Retry2 must use a new immutable source and output `candidate1_screen_retry2`, the same ledger and candidate ID. Restart from the original evaluated parent only after verifying the failed warmup checkpoint contains no learned updates. Preserve its evidence. No second parent GPU evaluation is needed.
+- Read-only checkpoint byte comparison found only reward-normalizer, exploration, RNG and environment-step leaves changed during that single warmup collection; all actor/critic/target/temperature parameters and optimizer states were unchanged. Parent and stopped checkpoint both report682772 updates. Disk available16.176GiB.
+- Audited the restored optimizer schedule: critic learning rate remains at its1.5e-4 floor; actor is about2.2514e-4 and would decay to about2.0532e-4 over60M additional transitions. Retain clocks, moments and horizon; this screen is not using a vanishing learning rate.
+
 ## Next action for the scheduled continuation
 
 1. Inspect `bootstrap_status.json`, `ledger.json`, live processes and the old queue status. While old work continues, do not launch a GPU job. Do not rerun bootstrap or mutate its deployed source. Stay quiet for unchanged state.

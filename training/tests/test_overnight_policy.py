@@ -34,7 +34,8 @@ def saved_config():
                 "reset": {"reset_freeze_steps": 50, "shoulder_spread": .2},
                 "action": {"input_mode": "raw", "residual_scale": .15},
                 "observation": {"marker": "same"}},
-        "training": {"network": {"actor_hidden_dim": 256}, "replay": {"n_step": 7, "minimum_size": 100_000},
+        "training": {"network": {"actor_hidden_dim": 256},
+                     "replay": {"capacity": 10_000_000, "n_step": 7, "minimum_size": 100_000},
                      "exploration": {"warmup_action": "uniform", "target_sigma": .15,
                                      "maximum_noise_repeat": 16},
                      "optimization": {"learning_rate_peak": .0003}, "checkpoint": {}},
@@ -68,7 +69,10 @@ class OvernightPolicyTests(unittest.TestCase):
         self.assertEqual(cfg["task"], saved["task"])
         self.assertEqual(cfg["training"]["network"], saved["training"]["network"])
         self.assertEqual(cfg["training"]["optimization"]["learning_rate_schedule_updates"], OPTIMIZER_HORIZON)
-        self.assertEqual(cfg["training"]["replay"]["capacity"], 5_000_000)
+        self.assertEqual(cfg["training"]["replay"]["capacity"], 4_000_000)
+        self.assertEqual(saved["training"]["replay"]["capacity"], 10_000_000)
+        self.assertEqual(cfg["overnight"]["replay_capacity"], 4_000_000)
+        self.assertEqual(cfg["overnight"]["replay_backend"], "gpu")
         self.assertEqual(cfg["training"]["replay"]["minimum_size"], saved["training"]["replay"]["minimum_size"])
         self.assertEqual(cfg["training"]["exploration"],
                          {**saved["training"]["exploration"], "warmup_action": "policy"})

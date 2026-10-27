@@ -12,6 +12,7 @@ import math
 import os
 from pathlib import Path
 import subprocess
+import struct
 import sys
 import time
 
@@ -106,6 +107,147 @@ def verify_parent_repeat(expected, actual):
             'note': 'Small repeat variation accepted; this is not an improvement or a deterministic replay claim.'}
 
 
+def _tensor_fingerprints(path):
+    """Read the pinned safetensors envelope and hash payloads using only stdlib."""
+    path = Path(path)
+    with path.open('rb') as stream:
+        raw = stream.read(8)
+        if len(raw) != 8:
+            raise RuntimeError('Truncated checkpoint header')
+        size = struct.unpack('<Q', raw)[0]
+        if not 0 < size <= 32 * 1024 * 1024:
+            raise RuntimeError('Invalid checkpoint header size')
+        header = json.loads(stream.read(size))
+        metadata = header['__metadata__']
+        if metadata.get('format') != 'learner_state' or metadata.get('version') != '1':
+            raise RuntimeError('Unsupported checkpoint envelope')
+        manifest = json.loads(metadata['manifest'])
+        keys = [entry['key'] for entry in manifest]
+        if not keys or keys != [f'state.{i:04d}' for i in range(len(keys))]:
+            raise RuntimeError('Expected the pinned contiguous native leaf manifest')
+        if set(header) - {'__metadata__'} != set(keys):
+            raise RuntimeError('Checkpoint manifest does not cover all tensors')
+        data_start, payload_size = 8 + size, path.stat().st_size - 8 - size
+        result = {}
+        for entry in manifest:
+            key = entry['key']
+            spec = header[key]
+            begin, end = spec['data_offsets']
+            if not 0 <= begin <= end <= payload_size:
+                raise RuntimeError(f'Invalid tensor payload bounds: {key}')
+            expected_shape = entry['shape'] or [1]
+            if spec['shape'] != expected_shape:
+                raise RuntimeError(f'Tensor header/manifest shape differs: {key}')
+            stream.seek(data_start + begin)
+            digest = hashlib.sha256()
+            remaining = end - begin
+            scalar = b''
+            while remaining:
+                block = stream.read(min(remaining, 1024 * 1024))
+                if not block:
+                    raise RuntimeError('Truncated tensor payload')
+                digest.update(block)
+                if end - begin <= 16:
+                    scalar += block
+                remaining -= len(block)
+            result[key] = {'sha256': digest.hexdigest(), 'dtype': spec['dtype'],
+                           'shape': entry['shape'], 'scalar': scalar}
+    return manifest, result
+
+
+def _integer_leaf(tensor):
+    formats = {'I32': '<i', 'I64': '<q', 'U32': '<I', 'U64': '<Q'}
+    if tensor['shape'] != [] or tensor['dtype'] not in formats:
+        raise RuntimeError('Expected a scalar integer checkpoint clock')
+    return struct.unpack(formats[tensor['dtype']], tensor['scalar'])[0]
+
+
+def verify_unlearned_startup(parent_checkpoint, output):
+    """Permit discarding only a proven fresh-replay warm-up with no learning.
+
+This is deliberately tied to the pinned TrainingCheckpoint layout, not a generic
+checkpoint recovery mechanism. Every actor/critic/target/temperature leaf,
+including optimizer moments and scheduler clocks, must remain byte-identical.
+"""
+    from training import RUNTIME_COMMIT
+
+    output = Path(output)
+    latest = read_json(output / 'latest_checkpoint.json')
+    provenance = read_json(output / 'provenance.json')
+    parity = read_json(output / 'warmstart_parity.json')
+    config = read_json(output / 'resolved_config.json')
+    if not all((latest, provenance, parity, config)):
+        raise RuntimeError('Failed startup lacks checkpoint/provenance/parity/config evidence')
+    parent_state, parent_policy, before = checkpoint_pair(parent_checkpoint)
+    failed_state, failed_policy, after = checkpoint_pair(latest['state'])
+    if Path(latest['policy']).resolve() != failed_policy:
+        raise RuntimeError('Failed startup latest policy/state pair differs')
+    if provenance.get('runtime_commit') != RUNTIME_COMMIT or provenance.get('replay_is_fresh') is not True:
+        raise RuntimeError('Failed startup must use pinned runtime and fresh replay')
+    if (Path(provenance['source_state']).resolve() != parent_state
+            or provenance.get('source_state_sha256') != file_hash(parent_state)
+            or provenance.get('source_policy_sha256') != file_hash(parent_policy)):
+        raise RuntimeError('Failed startup parent provenance differs')
+    if (parity.get('parameter_exact_match') is not True
+            or parity.get('deterministic_action_max_abs_error') != 0
+            or parity.get('fresh_replay_size') != 0):
+        raise RuntimeError('Failed startup lacks exact parent restoration and empty replay proof')
+    for name in ('policy_schema_json', 'critic_schema_json', 'global_update_step'):
+        if name not in before or before[name] != after.get(name):
+            raise RuntimeError(f'Failed startup changed or omitted {name}')
+    start, stopped = int(before['environment_steps']), int(after['environment_steps'])
+    added = stopped - start
+    minimum = int(config['training']['replay']['minimum_size'])
+    if not 0 <= added < minimum:
+        raise RuntimeError('Failed startup is outside the fresh-replay warm-up window')
+    if parity.get('environment_steps') != start or parity.get('global_update_step') != int(before['global_update_step']):
+        raise RuntimeError('Warm-start clocks do not match the parent')
+    if int(latest['environment_steps']) != stopped:
+        raise RuntimeError('Failed checkpoint and latest marker disagree')
+    before_manifest, before_tensors = _tensor_fingerprints(parent_state)
+    after_manifest, after_tensors = _tensor_fingerprints(failed_state)
+    if before_manifest != after_manifest or len(before_manifest) <= 14:
+        raise RuntimeError('Compact checkpoint layout differs or is incomplete')
+    keys = [entry['key'] for entry in before_manifest]
+    if any((before_tensors[key]['dtype'], before_tensors[key]['shape']) !=
+           (after_tensors[key]['dtype'], after_tensors[key]['shape']) for key in keys):
+        raise RuntimeError('Compact checkpoint tensor schema changed')
+    # Native TrainingCheckpoint fields after temperature: normalizer(5),
+    # exploration(3), loss_scale(2), key, update_credit, env_steps, global_update.
+    tail = keys[-14:]
+    expected_tail = [('F32', 1), *[('F32', 0)] * 4, ('F32', 2),
+                     ('I32', 0), ('I32', 0), ('F32', 0), ('I32', 0),
+                     ('U32', 1), ('F32', 0), ('I32', 0), ('I32', 0)]
+    for key, (dtype, dimensions) in zip(tail, expected_tail, strict=True):
+        tensor = before_tensors[key]
+        if tensor['dtype'] != dtype or len(tensor['shape']) != dimensions:
+            raise RuntimeError(f'Unrecognized pinned compact tail layout at {key}')
+    if before_tensors[tail[0]]['shape'][0] != before_tensors[tail[5]]['shape'][0] or before_tensors[tail[10]]['shape'] != [2]:
+        raise RuntimeError('Unrecognized normalizer/exploration/PRNG shapes')
+    allowed = set(tail[:8] + [tail[10], tail[11], tail[12]])
+    protected = [key for key in keys if key not in allowed]
+    for key in protected:
+        if before_tensors[key] != after_tensors[key]:
+            raise RuntimeError(f'Failed startup changed protected model/optimizer/clock tensor {key}')
+    if (_integer_leaf(before_tensors[tail[-1]]) != int(before['global_update_step'])
+            or _integer_leaf(before_tensors[tail[-2]]) != start
+            or _integer_leaf(after_tensors[tail[-2]]) != stopped):
+        raise RuntimeError('Checkpoint scalar clocks disagree with metadata')
+    policy_manifest, policy_tensors = _tensor_fingerprints(parent_policy)
+    failed_policy_manifest, failed_policy_tensors = _tensor_fingerprints(failed_policy)
+    if policy_manifest != failed_policy_manifest or policy_tensors != failed_policy_tensors:
+        raise RuntimeError('Failed startup changed deployable actor tensors')
+    return {'verified_zero_learning': True, 'parent_state': str(parent_state),
+            'failed_state': str(failed_state), 'failed_state_sha256': file_hash(failed_state),
+            'parent_state_sha256': file_hash(parent_state), 'additional_transitions_discarded': added,
+            'fresh_replay_minimum_size': minimum, 'global_update_step': int(before['global_update_step']),
+            'protected_state_tensor_count': len(protected), 'policy_tensor_count': len(policy_manifest),
+            'protected_tensor_sha256': {key: before_tensors[key]['sha256'] for key in protected},
+            'changed_discarded_warmup_leaves': [key for key in keys if key in allowed and before_tensors[key] != after_tensors[key]],
+            'discarded_state': 'Fresh replay, reward normalizer updates, exploration/RNG, update credit and warm-up environment steps; retry restores the original parent.',
+            'failed_artifacts_preserved': True}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--root', required=True)
@@ -135,16 +277,27 @@ def main():
             ledger = read_json(root / 'ledger.json', {'jobs': []})
             if any(j.get('state') == 'running' for j in ledger['jobs']):
                 raise RuntimeError('Parent-check resume cannot duplicate running work')
+            startup_verifications = []
             for job in ledger['jobs']:
                 if job.get('kind') != 'training':
                     continue
                 command = job['command']
                 output = Path(command[command.index('--output') + 1])
-                if job.get('state') == 'complete' or (output / 'latest_checkpoint.json').exists():
+                if job.get('state') == 'complete':
                     raise RuntimeError('Inspect existing trained checkpoints instead of restarting from parent')
+                if (output / 'latest_checkpoint.json').exists():
+                    stopped_failed_child = (job.get('state') == 'stopped'
+                                            and read_json(output / 'status.json', {}).get('state') == 'failed')
+                    if job.get('state') != 'failed' and not stopped_failed_child:
+                        raise RuntimeError('Only a failed startup can discard verified unlearned warm-up')
+                    parent = command[command.index('--checkpoint') + 1]
+                    startup_verifications.append(verify_unlearned_startup(parent, output))
             if (root / args.screen_name).exists():
                 raise RuntimeError('Retry needs a new output directory; preserve the failed attempt')
             write_json(root / f'bootstrap_previous_{int(time.time())}.json', previous)
+            if startup_verifications:
+                write_json(root / f'{args.screen_name}_failed_startup_verification.json',
+                           {'attempts': startup_verifications, 'verified_utc': utc_now()})
         status = {'state': 'waiting_for_existing_queue', 'started_utc': utc_now(),
                   'pid': os.getpid(), 'source_commit': args.source_commit,
                   'source': str(SOURCE), 'arguments': vars(args)}

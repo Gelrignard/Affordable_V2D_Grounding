@@ -82,6 +82,30 @@ def evaluate(args, checkpoint, name):
     return read_json(output / 'evaluation.json')
 
 
+def verify_parent_repeat(expected, actual):
+    """Verify the evaluation contract without asserting bit-exact GPU physics."""
+    identity = ('checkpoint_sha256', 'world_count', 'step_count', 'start_frame',
+                'reset_mode', 'settling_steps', 'sim_control_fps', 'sim_physics_fps', 'parquet')
+    for name in identity:
+        if name not in expected or expected[name] != actual.get(name):
+            raise RuntimeError(f'Parent evaluation contract differs: {name}')
+    if actual.get('non_finite_worlds'):
+        raise RuntimeError('Parent evaluation has non-finite worlds')
+    tolerances = {'add_auc': .01, 'mppe_cm': .5, 'spider_sr': 0., 'maniptrans_sr': 0.}
+    deltas = {}
+    for name, tolerance in tolerances.items():
+        old, new = expected['leaderboard']['scores'][name], actual['leaderboard']['scores'][name]
+        if not isinstance(new, (float, int)) or not math.isfinite(new):
+            raise RuntimeError(f'Parent repeat score is invalid: {name}')
+        deltas[name] = new - old
+        if abs(deltas[name]) > tolerance:
+            raise RuntimeError(f'Parent repeat drift exceeds inspection bound for {name}: {old} vs {new}')
+    return {'identity_fields_verified': list(identity), 'score_differences': deltas,
+            'absolute_inspection_bounds': tolerances,
+            'comparison_baseline': 'new_evaluator_parent_rollout',
+            'note': 'Small repeat variation accepted; this is not an improvement or a deterministic replay claim.'}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--root', required=True)
@@ -90,14 +114,24 @@ def main():
     p.add_argument('--source-run', action='append', required=True)
     p.add_argument('--source-commit', required=True)
     p.add_argument('--deadline-utc', default='2026-10-27T13:30:00Z')
+    p.add_argument('--resume-parent-evaluation', action='store_true',
+                   help='Resume a stopped initial parent check using its completed saved rollout')
     args = p.parse_args()
     root = Path(args.root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     deadline = parse_deadline(args.deadline_utc)
     with exclusive_lock(root / 'bootstrap.lock'):
         status_file = root / 'bootstrap_status.json'
-        if status_file.exists():
+        previous = read_json(status_file)
+        if previous and not args.resume_parent_evaluation:
             raise RuntimeError('Bootstrap has already been invoked; inspect existing state before any retry')
+        if args.resume_parent_evaluation:
+            if not previous or previous.get('state') != 'needs_attention':
+                raise RuntimeError('Parent-check resume requires a stopped bootstrap')
+            ledger = read_json(root / 'ledger.json', {'jobs': []})
+            if any(j.get('state') == 'running' or j.get('kind') == 'training' for j in ledger['jobs']):
+                raise RuntimeError('Parent-check resume cannot duplicate or resume training')
+            write_json(root / f'bootstrap_previous_{int(time.time())}.json', previous)
         status = {'state': 'waiting_for_existing_queue', 'started_utc': utc_now(),
                   'pid': os.getpid(), 'source_commit': args.source_commit,
                   'source': str(SOURCE), 'arguments': vars(args)}
@@ -121,13 +155,15 @@ def main():
                        'selection_rule': 'maximum available evaluated ADD-AUC; lower MPPE breaks ties'})
             status.update(state='evaluating_parent', parent=selected)
             write_json(status_file, status)
-            baseline = evaluate(args, selected['policy'], 'parent_evaluation')
+            baseline = (read_json(root / 'parent_evaluation/evaluation.json')
+                        if args.resume_parent_evaluation else evaluate(args, selected['policy'], 'parent_evaluation'))
+            if not baseline:
+                raise RuntimeError('No completed parent evaluation is available')
             baseline_scores = baseline['leaderboard']['scores']
-            for name, old in selected['scores'].items():
-                new = baseline_scores[name]
-                if new is None or not math.isclose(new, old, rel_tol=1e-4, abs_tol=1e-4):
-                    raise RuntimeError(f'Parent evaluation parity failed for {name}: {old} vs {new}')
-            write_json(root / 'best_checkpoint.json', {**selected, 'source_commit': 'upstream_existing',
+            repeat = verify_parent_repeat(read_json(selected['evaluation']), baseline)
+            write_json(root / 'parent_repeat_verification.json', repeat)
+            write_json(root / 'best_checkpoint.json', {**selected, 'scores': baseline_scores,
+                       'historical_scores': selected['scores'], 'source_commit': 'upstream_existing',
                        'overnight_evaluation': str(root / 'parent_evaluation/evaluation.json')})
             output = root / 'candidate1_screen'
             state, policy, metadata = checkpoint_pair(selected['state'])

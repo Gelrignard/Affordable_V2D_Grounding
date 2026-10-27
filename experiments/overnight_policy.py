@@ -167,6 +167,7 @@ def build_config(saved, *, state, output, start, end, phase, checkpoint_interval
                     checkpoint_path=str(state), curriculum=copy.deepcopy(curriculum))
     training["replay"].update(capacity=REPLAY_CAPACITY, batch_size=WORLDS,
                               clear_on_stage_change=False)
+    training.setdefault("exploration", {})["warmup_action"] = "policy"
     training["optimization"]["learning_rate_schedule_updates"] = OPTIMIZER_HORIZON
     training["checkpoint"].update(save_interval_environment_steps=checkpoint_interval,
                                   save_replay=False, load_replay_path=None,
@@ -265,6 +266,8 @@ def run_child(args):
         "source_environment_steps": start, "additional_transition_cap": additional,
         "absolute_transition_cap": end, "optimizer_horizon": OPTIMIZER_HORIZON,
         "replay_capacity": REPLAY_CAPACITY, "replay_is_fresh": True,
+        "replay_warmup_action": cfg["training"]["exploration"]["warmup_action"],
+        "source_replay_warmup_action": saved["training"].get("exploration", {}).get("warmup_action", "uniform"),
         "phase": args.phase, "created_utc": utc_now(), "harness_sha256": sha256(__file__),
         "training_voc_scale": 0.0, "recovery_reset_voc_scale": cfg["env"]["reset"]["reset_voc_scale"],
         "reset_freeze_steps": cfg["env"]["reset"]["reset_freeze_steps"],

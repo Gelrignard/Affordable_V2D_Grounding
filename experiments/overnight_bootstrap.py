@@ -6,6 +6,7 @@ training phase. This detached starter does not invent further experiments.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -20,7 +21,12 @@ sys.path.insert(0, str(SOURCE))
 from experiments.overnight_guard import (
     exclusive_lock, external_queue_ready, parse_deadline, read_json, utc_now, write_json,
 )
-from experiments.overnight_policy import checkpoint_pair
+from experiments.overnight_policy import build_config, checkpoint_pair, transition_budget
+
+
+def file_hash(path):
+    with Path(path).open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
 def eligible_sources(run_directories):
@@ -124,6 +130,24 @@ def main():
             write_json(root / 'best_checkpoint.json', {**selected, 'source_commit': 'upstream_existing',
                        'overnight_evaluation': str(root / 'parent_evaluation/evaluation.json')})
             output = root / 'candidate1_screen'
+            state, policy, metadata = checkpoint_pair(selected['state'])
+            end, _ = transition_budget(selected['environment_steps'], 60_000_000)
+            planned = build_config(json.loads(metadata['resolved_config_json']), state=state,
+                                   output=output, start=selected['environment_steps'], end=end,
+                                   phase='refine', checkpoint_interval=10_000_000)
+            planned_path = root / 'candidate1_screen_planned_config.json'
+            write_json(planned_path, planned)
+            write_json(root / 'candidate1_screen_manifest.json', {
+                'source_commit': args.source_commit, 'source_directory': str(SOURCE),
+                'prepared_utc': utc_now(), 'effective_config': str(planned_path),
+                'effective_config_sha256': file_hash(planned_path),
+                'parent_state': str(state), 'parent_state_sha256': file_hash(state),
+                'parent_policy': str(policy), 'parent_policy_sha256': file_hash(policy),
+                'motion_parquet': planned['task']['parquet'],
+                'motion_parquet_sha256': file_hash(planned['task']['parquet']),
+                'fresh_replay': True, 'training_voc_scale': 0,
+                'recovery_reset_voc_scale': 1, 'evaluation_reset_voc_scale': 0,
+            })
             status.update(state='training_first_screen', output=str(output))
             write_json(status_file, status)
             command = [sys.executable, str(SOURCE / 'experiments/overnight_policy.py'), 'train',
@@ -132,6 +156,8 @@ def main():
                        '--additional-transitions', '60000000', '--max-seconds', '1800',
                        '--deadline-utc', args.deadline_utc]
             run_guard(args, 'candidate1_screen', 'training', 1860, command)
+            if read_json(output / 'resolved_config.json') != planned:
+                raise RuntimeError('Executed training config differs from the prepared config')
             checkpoint = read_json(output / 'latest_checkpoint.json')
             if not checkpoint or checkpoint['environment_steps'] <= selected['environment_steps']:
                 raise RuntimeError('Training did not produce a new checkpoint')

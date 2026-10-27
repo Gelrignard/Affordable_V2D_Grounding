@@ -1,0 +1,23 @@
+{
+  "algorithm": "model_based",
+  "device": "cuda:0",
+  "worlds": 256,
+  "replay_capacity": 131072,
+  "replay_device": "cuda",
+  "batch_size": 256,
+  "hidden": 256,
+  "model_hidden": 512,
+  "model_window": 8,
+  "imagination_horizon": 8,
+  "imagination_batch": 128,
+  "model_updates": 4,
+  "model_min_updates": 100,
+  "model_validation_interval": 25,
+  "warmup_transitions": 16384,
+  "total_transitions": 10000000,
+  "max_hours": 2.0,
+  "lower_body_residual": 0.0,
+  "reference_weight": 0.2,
+  "wrench_weight": 1.0,
+  "capture_sim": true
+}

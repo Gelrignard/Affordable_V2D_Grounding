@@ -1,0 +1,146 @@
+{
+  "recorded_utc": "2026-10-26T15:55:10.629246+00:00",
+  "partial": true,
+  "specification": "experiments/chord_candidates_v1_20261026.json",
+  "implementation_commit": "8b6151a",
+  "scope": "corrected Tier 1 episode 5, seed 42; local input-reference metrics",
+  "cloud_queue": "/root/autodl-tmp/v2d/native_candidates_20261026_v1/candidate_pair/queue_status.json",
+  "rows": [
+    {
+      "tier": 1,
+      "episode": 5,
+      "variant": "native_corrected",
+      "add_auc": 0.11688761839481554,
+      "spider_sr": 0.0,
+      "maniptrans_sr": 0.0,
+      "mppe_cm": 68.99019756217022,
+      "world_count": 16,
+      "training_hours": 0.15664909083333334,
+      "transitions": 20000768,
+      "metric_reference": "tier1_input_reference",
+      "official_leaderboard_score": false,
+      "checkpoint_sha256": "c52b947f62bc61b2fdb788ea4e3f937c6e4a7db69502ec0d2655304e9caf3fbb"
+    },
+    {
+      "tier": 1,
+      "episode": 5,
+      "variant": "native_corrected",
+      "add_auc": 0.09768351196410768,
+      "spider_sr": 0.0,
+      "maniptrans_sr": 0.0,
+      "mppe_cm": 91.12420651071884,
+      "world_count": 16,
+      "training_hours": 0.28541019055555555,
+      "transitions": 40001536,
+      "metric_reference": "tier1_input_reference",
+      "official_leaderboard_score": false,
+      "checkpoint_sha256": "e3e94af9c4dc9f2713f2a0f3e3e7092a4ca665e408ece5a16d9472b2f3d5f4f2"
+    },
+    {
+      "tier": 1,
+      "episode": 5,
+      "variant": "native_corrected",
+      "add_auc": 0.14518553713858423,
+      "spider_sr": 0.0,
+      "maniptrans_sr": 0.0,
+      "mppe_cm": 61.929592930989116,
+      "world_count": 16,
+      "training_hours": 0.4151137230555556,
+      "transitions": 60002304,
+      "metric_reference": "tier1_input_reference",
+      "official_leaderboard_score": false,
+      "checkpoint_sha256": "09ca2ea720d301023aaaa76f4eae9e2cfd35796063a2cd370c9cd2d35c0191bf"
+    },
+    {
+      "tier": 1,
+      "episode": 5,
+      "variant": "adaptive",
+      "add_auc": 0.11555957128614158,
+      "spider_sr": 0.0,
+      "maniptrans_sr": 0.0,
+      "mppe_cm": 78.45937330507978,
+      "world_count": 16,
+      "training_hours": 0.09121682819185986,
+      "transitions": 10000384,
+      "metric_reference": "tier1_input_reference",
+      "official_leaderboard_score": false,
+      "checkpoint_sha256": "5957dd8317e1bf711b58bf08dc4cfbd2683718c16f199a74a1479e4364eb2faf"
+    },
+    {
+      "tier": 1,
+      "episode": 5,
+      "variant": "adaptive",
+      "add_auc": 0.16448311316051845,
+      "spider_sr": 0.0,
+      "maniptrans_sr": 0.0,
+      "mppe_cm": 42.09246566221965,
+      "world_count": 16,
+      "training_hours": 0.1552176640762223,
+      "transitions": 20000768,
+      "metric_reference": "tier1_input_reference",
+      "official_leaderboard_score": false,
+      "checkpoint_sha256": "776566a6cb871c3fcae7a845ef7da1cd476987be5a1376ce643a1c083648d6b2"
+    },
+    {
+      "tier": 1,
+      "episode": 5,
+      "variant": "adaptive",
+      "add_auc": 0.1105745264207378,
+      "spider_sr": 0.0,
+      "maniptrans_sr": 0.0,
+      "mppe_cm": 66.00185513459324,
+      "world_count": 16,
+      "training_hours": 0.21954990050445,
+      "transitions": 30001152,
+      "metric_reference": "tier1_input_reference",
+      "official_leaderboard_score": false,
+      "checkpoint_sha256": "10796d44f70cad997196ad1d2e56acf8ed74cc6a271bf9c4e7b2bab13f27eace"
+    }
+  ],
+  "run_status": [
+    {
+      "variant": "adaptive",
+      "state": "stopped_at_stall_gate",
+      "transitions": 30001152,
+      "training_elapsed_s": 790.37964181602,
+      "evaluation_elapsed_s": 260.80652126669884,
+      "peak_gpu_used_mib": 16564,
+      "decision": {
+        "transitions": 30001152,
+        "previous_stage": 0,
+        "stage": 0,
+        "probe_scale": 0.75,
+        "passed": false,
+        "reason": "probe_gate_not_met"
+      },
+      "probe_reference_tracking": {
+        "failure_cause_fraction": {
+          "object": 0.8125,
+          "palm": 1.0,
+          "pelvis": 1.0
+        },
+        "reference_end_fraction": 1.0,
+        "success_rate": 0.0
+      }
+    },
+    {
+      "variant": "adaptive_wrench",
+      "state": "training",
+      "transitions": 2252800,
+      "training_elapsed_s": null,
+      "evaluation_elapsed_s": null,
+      "peak_gpu_used_mib": 15691,
+      "decision": null,
+      "probe_reference_tracking": null
+    }
+  ],
+  "interpretation": [
+    "The adaptive-only candidate stopped at the predeclared 30M stall gate. Its 20M improvement over the native 20M checkpoint did not persist at 30M. SP-SR and MP-SR are measured zeros.",
+    "The second candidate is still running; do not infer its outcome from the first.",
+    "Pelvis reference-tracking failure is not by itself proof of a physical fall. Audit actual body height/orientation before changing the gate.",
+    "The force-balance residual can be small away from the object goal. In the adaptive 10M unassisted trace, 80.01% of samples were more than 0.15m from the object reference without hand contact; their mean normalized wrench deficit was 0.1098. This is a diagnostic limitation, not evidence that the as-yet unfinished wrench-trained policy exploited it.",
+    "One episode and one training seed, local tier input references; no convergence, general correction benefit or official leaderboard claim."
+  ],
+  "remaining": "Complete the bounded adaptive_wrench candidate; compare all saved checkpoint scores and total training/evaluation cost.",
+  "instance": "prepaid; keep powered on"
+}

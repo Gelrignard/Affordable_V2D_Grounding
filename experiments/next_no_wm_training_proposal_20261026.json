@@ -1,0 +1,45 @@
+{
+  "recorded_utc": "2026-10-26T17:07:39.798140+00:00",
+  "status": "proposed_not_launched",
+  "machine_check_utc": "2026-10-26T17:02:01.450860+00:00",
+  "machine_check": {
+    "gpu_utilization_percent": 0,
+    "gpu_memory_used_mib": 1,
+    "gpu_compute_processes": 0,
+    "old_custom_queue": "paused_by_user",
+    "native_candidate_pair": "complete"
+  },
+  "input": {
+    "tier": 1,
+    "episode": 5,
+    "variant": "corrected",
+    "use_as": "soft motion/contact prior",
+    "strict_correction_acceptance_is_not_training_gate": true
+  },
+  "proposal": {
+    "learner": "Pinned native CHORD PPO; no WM",
+    "controller": "Frozen SONIC with all native body and finger residuals",
+    "timing": "Retain native G1 50Hz source-frame playback and physics substeps",
+    "learning_rate": "Native PPO initial 5e-4, KL-adaptive target 0.02; native five epochs and four minibatches",
+    "curriculum": "Adapt DexMachina rolling reward/completion assistance reduction and recovery; replace v1 full-episode pelvis-reference probe gate. Independently score with assistance exactly zero. Map rewards and thresholds explicitly before execution.",
+    "reward_scope": "Native task/contact rewards first; leave new wrench-reward term off to avoid coupling changes",
+    "worlds": 2048,
+    "rollout_steps": 24,
+    "gpu_memory_guard_mib": 22000,
+    "maximum_training_transitions": 60000000,
+    "maximum_training_wall_minutes": 45,
+    "maximum_total_wall_minutes_including_profile_and_evaluation": 75,
+    "evaluation_every_transitions": 10000000,
+    "evaluation_worlds": 16,
+    "profile_before_long_run": true,
+    "baseline": "Existing native FlashSAC corrected checkpoints at 20M, 40M and 60M, plus separately labeled 350M endpoint; report matched transitions and wall time. This is a candidate-pipeline comparison, not isolation of PPO alone.",
+    "decision": "Continue only if unassisted score/contact/physical stability improve and assistance actually decreases; if the curriculum stays stuck, diagnose rather than automatically extend. Select checkpoint by prespecified unassisted evaluation and retain every checkpoint.",
+    "timing_note": "75 minutes is a proposed hard allocation cap, not a prediction that PPO completes 60M or converges."
+  },
+  "followup_after_signal": "If useful, hold the curriculum fixed for matched FlashSAC learning-rate-horizon and update-ratio ablations; do not combine all knobs in the first run.",
+  "sources": [
+    "https://arxiv.org/html/2505.24853v1",
+    "https://github.com/MandiZhao/dexmachina/blob/main/dexmachina/envs/curriculum.py",
+    "https://github.com/nvidia-isaac/video_to_data/blob/8c778f905cb35f76f8e6cd6e2ea486da4fb9e0ef/robotic_grounding/flash_chord/src/flash_chord/configs/experiment/g1_recon_body_ppo.yaml"
+  ]
+}

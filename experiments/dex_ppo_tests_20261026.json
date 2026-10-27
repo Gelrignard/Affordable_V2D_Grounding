@@ -1,0 +1,58 @@
+{
+  "queue_identity": "dexmachina_20261026",
+  "authorization": "Run replay-capacity and DexMachina-style tests while the user attends a meeting; keep the prepaid instance powered on.",
+  "baseline_branch": "work/tier2-rl",
+  "baseline_commit": "fef0ec7",
+  "experiment_branch": "work/tier2-dexmachina",
+  "cloud_root": "/root/autodl-tmp/v2d/dexmachina_20261026",
+  "input": {"tier": 1, "episode": 5, "variant": "corrected", "seed": 42},
+  "capacity_sweep": {
+    "learner": "pinned native CHORD FlashSAC",
+    "worlds": 2048,
+    "batch_size": 2048,
+    "memory_guard_mib": 23500,
+    "poll_seconds": 0.2,
+    "fill_and_rollover": "capacity plus at least 256 vector collections",
+    "search": "default allocator starts at 4M; bracket to 250k; platform allocator 5M probe",
+    "per_probe_seconds": 480,
+    "total_start_guard_seconds": 2700,
+    "interpretation": "Training-only observed capacity. A guard stop is not an allocator OOM. A passing short test does not guarantee long-run safety or better learning."
+  },
+  "ppo_queue": {
+    "entry": "experiments/run_dex_ppo_tests.py",
+    "profile": {"iterations": 8, "transitions": 393216, "wall_limit_seconds": 360, "evaluate_checkpoint_before_long_tests": true},
+    "native_ppo_control": {"iterations": 408, "transitions": 20054016, "training_wall_limit_seconds": 1200},
+    "dex_ppo_candidate": {"iterations": 1221, "transitions": 60014592, "training_wall_limit_seconds": 2700},
+    "worlds": 2048,
+    "rollout_steps": 24,
+    "save_interval_iterations": 204,
+    "memory_guard_mib": 22000,
+    "native_optimizer": {"initial_learning_rate": 0.0005, "schedule": "KL-adaptive", "desired_kl": 0.02, "epochs": 5, "minibatches": 4},
+    "curriculum": "See training/dex_curriculum.py and recorded dex_curriculum_spec.json; rolling reward/completion with plateau and recovery, seven CHORD assistance scales.",
+    "frame_zero_starts": "Dex candidate uses 25% immediate frame-zero from initialization and 50% at zero assistance; native control retains upstream settings.",
+    "world_model": false,
+    "wrench_reward_extension": false,
+    "replay_buffer": "PPO uses rollout batches rather than a rolling off-policy replay buffer.",
+    "evaluation": "After learner exits, each saved milestone and terminal checkpoint: 16 worlds, exact frame zero, no assistance, raw poses/mesh, four independently verified metrics. Evaluation timeout 360 seconds per checkpoint.",
+    "baseline": "Reuse native corrected FlashSAC checkpoint evaluations at 20M, 40M, 60M; no baseline retraining.",
+    "selection": "Best AUC is exploratory selection on the same evaluation worlds; report all checkpoints and terminal outcomes.",
+    "timing": "Jobs serialized. Budgets are caps rather than duration or convergence promises. Setup has a 180-second supervisor allowance."
+  },
+  "capacity_refinement": {
+    "reason": "Initial 3.75M/4M/5M attempts crossed the 23500 MiB guard near 23887 MiB before the first logged update. This was not proof of allocator OOM.",
+    "entry": "experiments/refine_replay_capacity.py",
+    "jax_memory_fraction": 0.84,
+    "memory_guard_mib": 24200,
+    "capacities": [4000000, 5000000, 6000000, 7000000, 8000000],
+    "per_probe_seconds": 480,
+    "total_start_guard_seconds": 1500,
+    "serial_policy": "PPO orchestrator is held between jobs while the active integration evaluation finishes. Refinement waits for zero GPU processes, runs isolated capacity probes, and resumes the orchestrator in finally. No learner is paused or altered.",
+    "interpretation": "Report high-water capacity separately from the comfortable 3.5M setting. Preserve initial sweep results and all refinement results."
+  },
+  "artifact_policy": "Preserve checkpoints, raw evaluations, optimizer/curriculum state, executed source and logs. No automatic full-training continuation or shutdown.",
+  "sources": [
+    "https://arxiv.org/html/2505.24853v1",
+    "https://github.com/MandiZhao/dexmachina/blob/main/dexmachina/envs/curriculum.py",
+    "https://github.com/nvidia-isaac/video_to_data/tree/8c778f905cb35f76f8e6cd6e2ea486da4fb9e0ef/robotic_grounding/flash_chord"
+  ]
+}

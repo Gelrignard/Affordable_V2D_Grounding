@@ -116,7 +116,11 @@ def main():
     p.add_argument('--deadline-utc', default='2026-10-27T13:30:00Z')
     p.add_argument('--resume-parent-evaluation', action='store_true',
                    help='Resume a stopped initial parent check using its completed saved rollout')
+    p.add_argument('--screen-name', default='candidate1_screen',
+                   help='Unique output name for the initial screen or a failed-startup retry')
     args = p.parse_args()
+    if not args.screen_name.replace('_', '').replace('-', '').isalnum():
+        raise ValueError('Screen name must be a single alphanumeric path component')
     root = Path(args.root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     deadline = parse_deadline(args.deadline_utc)
@@ -129,8 +133,17 @@ def main():
             if not previous or previous.get('state') != 'needs_attention':
                 raise RuntimeError('Parent-check resume requires a stopped bootstrap')
             ledger = read_json(root / 'ledger.json', {'jobs': []})
-            if any(j.get('state') == 'running' or j.get('kind') == 'training' for j in ledger['jobs']):
-                raise RuntimeError('Parent-check resume cannot duplicate or resume training')
+            if any(j.get('state') == 'running' for j in ledger['jobs']):
+                raise RuntimeError('Parent-check resume cannot duplicate running work')
+            for job in ledger['jobs']:
+                if job.get('kind') != 'training':
+                    continue
+                command = job['command']
+                output = Path(command[command.index('--output') + 1])
+                if job.get('state') == 'complete' or (output / 'latest_checkpoint.json').exists():
+                    raise RuntimeError('Inspect existing trained checkpoints instead of restarting from parent')
+            if (root / args.screen_name).exists():
+                raise RuntimeError('Retry needs a new output directory; preserve the failed attempt')
             write_json(root / f'bootstrap_previous_{int(time.time())}.json', previous)
         status = {'state': 'waiting_for_existing_queue', 'started_utc': utc_now(),
                   'pid': os.getpid(), 'source_commit': args.source_commit,
@@ -165,15 +178,15 @@ def main():
             write_json(root / 'best_checkpoint.json', {**selected, 'scores': baseline_scores,
                        'historical_scores': selected['scores'], 'source_commit': 'upstream_existing',
                        'overnight_evaluation': str(root / 'parent_evaluation/evaluation.json')})
-            output = root / 'candidate1_screen'
+            output = root / args.screen_name
             state, policy, metadata = checkpoint_pair(selected['state'])
             end, _ = transition_budget(selected['environment_steps'], 60_000_000)
             planned = build_config(json.loads(metadata['resolved_config_json']), state=state,
                                    output=output, start=selected['environment_steps'], end=end,
                                    phase='refine', checkpoint_interval=10_000_000)
-            planned_path = root / 'candidate1_screen_planned_config.json'
+            planned_path = root / f'{args.screen_name}_planned_config.json'
             write_json(planned_path, planned)
-            write_json(root / 'candidate1_screen_manifest.json', {
+            write_json(root / f'{args.screen_name}_manifest.json', {
                 'source_commit': args.source_commit, 'source_directory': str(SOURCE),
                 'prepared_utc': utc_now(), 'effective_config': str(planned_path),
                 'effective_config_sha256': file_hash(planned_path),
@@ -191,7 +204,7 @@ def main():
                        '--output', str(output), '--phase', 'refine',
                        '--additional-transitions', '60000000', '--max-seconds', '1800',
                        '--deadline-utc', args.deadline_utc]
-            run_guard(args, 'candidate1_screen', 'training', 1860, command)
+            run_guard(args, args.screen_name, 'training', 1860, command)
             if read_json(output / 'resolved_config.json') != planned:
                 raise RuntimeError('Executed training config differs from the prepared config')
             checkpoint = read_json(output / 'latest_checkpoint.json')
@@ -199,7 +212,7 @@ def main():
                 raise RuntimeError('Training did not produce a new checkpoint')
             status.update(state='evaluating_first_screen', checkpoint=checkpoint)
             write_json(status_file, status)
-            result = evaluate(args, checkpoint['policy'], 'candidate1_screen_evaluation')
+            result = evaluate(args, checkpoint['policy'], args.screen_name + '_evaluation')
             comparison = {'parent': baseline_scores, 'candidate': result['leaderboard']['scores'],
                           'phase_metrics': result['phase_metrics'],
                           'needs_agent_diagnosis': True, 'source_commit': args.source_commit}

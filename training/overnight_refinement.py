@@ -244,13 +244,31 @@ class OvernightObjective:
     def __init__(self, native, config):
         self.native = native
         self.config = config
-        self.term_names = native.term_names + ("object_orientation",)
+        self._term_names = native.term_names + ("object_orientation",)
         device = native.terms.device
-        self.weights = wp.array(tuple(config.weights) + (config.object_orientation_weight,), dtype=wp.float32, device=device)
-        self.terms = wp.zeros(native.world_count * 13, dtype=wp.float32, device=device)
-        self.score = wp.zeros(native.world_count, dtype=wp.float32, device=device)
+        self._weights = wp.array(tuple(config.weights) + (config.object_orientation_weight,), dtype=wp.float32, device=device)
+        self._terms = wp.zeros(native.world_count * 13, dtype=wp.float32, device=device)
+        self._score = wp.zeros(native.world_count, dtype=wp.float32, device=device)
         labels = native.contact_active.numpy().reshape(native.num_frames, 2)
         self.contact_blend = wp.array(smooth_contact_blend(labels, config.contact_blend_frames).reshape(-1), dtype=wp.float32, device=device)
+
+    # Runtime protocols on Python 3.12 use inspect.getattr_static: delegated
+    # __getattr__ attributes are invisible. Keep every protocol member explicit.
+    @property
+    def term_names(self):
+        return self._term_names
+
+    @property
+    def weights(self):
+        return self._weights
+
+    @property
+    def terms(self):
+        return self._terms
+
+    @property
+    def score(self):
+        return self._score
 
     def __getattr__(self, name):
         return getattr(self.native, name)
@@ -317,6 +335,38 @@ class OvernightTermination:
         self.palm_count = wp.zeros(native.world_count, dtype=wp.int32, device=native.terminated.device)
         self.object_count = wp.zeros_like(self.palm_count)
         self.last_episode_step = wp.full(native.world_count, -1, dtype=wp.int32, device=native.terminated.device)
+
+    @property
+    def terminated(self):
+        return self.native.terminated
+
+    @property
+    def truncated(self):
+        return self.native.truncated
+
+    @property
+    def cause_names(self):
+        return self.native.cause_names
+
+    @property
+    def cause_arrays(self):
+        return self.native.cause_arrays
+
+    @property
+    def error_names(self):
+        return self.native.error_names
+
+    @property
+    def error_arrays(self):
+        return self.native.error_arrays
+
+    @property
+    def packed_diagnostic_names(self):
+        return self.native.packed_diagnostic_names
+
+    @property
+    def packed_diagnostics(self):
+        return self.native.packed_diagnostics
 
     def __getattr__(self, name):
         return getattr(self.native, name)

@@ -1,5 +1,6 @@
 """Synthetic CPU kernels: no simulator, model assets, JAX or GPU allocation."""
 import math
+import inspect
 import unittest
 from dataclasses import asdict
 from types import SimpleNamespace
@@ -180,6 +181,28 @@ class TerminationKernelTests(unittest.TestCase):
 
 
 class WrapperTests(unittest.TestCase):
+    def test_all_runtime_protocol_members_are_statically_visible(self):
+        # Reproduce Python 3.12's lookup on earlier developer Python versions too.
+        # No attribute may pass solely because __getattr__ delegates to native.
+        objective = OvernightObjective(SimpleNamespace(
+            term_names=tuple(f"native_{i}" for i in range(12)), terms=arr(np.zeros(12)),
+            world_count=1, num_frames=1, contact_active=arr([0, 0])),
+            SimpleNamespace(weights=(1.,) * 12, object_orientation_weight=0., contact_blend_frames=0))
+        native_termination = SimpleNamespace(
+            world_count=1, terminated=arr([0], wp.int32), truncated=arr([0], wp.int32),
+            cause_names=("pelvis", "palm", "object"), cause_arrays=(arr([0], wp.int32),) * 3,
+            error_names=("error",), error_arrays=(arr([0]),),
+            packed_diagnostic_names=("pelvis", "palm", "object", "error"),
+            packed_diagnostics=arr([0] * 4))
+        termination = OvernightTermination(native_termination, None)
+        for name in ("score", "terms", "weights", "evaluate", "reset", "term_names", "set_weights"):
+            self.assertIsNotNone(inspect.getattr_static(objective, name))
+        for name in ("terminated", "truncated", "evaluate", "cause_names", "cause_arrays",
+                     "error_names", "error_arrays", "packed_diagnostic_names", "packed_diagnostics"):
+            self.assertIsNotNone(inspect.getattr_static(termination, name))
+            if name != "evaluate":
+                self.assertIs(getattr(termination, name), getattr(native_termination, name))
+
     def test_thirteenth_raw_term_and_weight_updates(self):
         names = tuple(f"native_{i}" for i in range(12))
         seen = []
@@ -214,6 +237,30 @@ class WrapperTests(unittest.TestCase):
 
 @unittest.skipIf(_RUNTIME_IMPORT_ERROR is not None, "pinned simulator runtime is unavailable")
 class NativeIntegrationTests(unittest.TestCase):
+    def test_wrappers_satisfy_all_native_runtime_protocols(self):
+        from flash_chord.objectives.composition import (
+            Objective, ObjectiveDiagnostics, CurriculumObjective, ObjectiveSpec,
+        )
+        from flash_chord.lifecycle.termination import (
+            Termination, TerminationDiagnostics, PackedTerminationDiagnostics, TerminationSpec,
+        )
+        objective = OvernightObjective(SimpleNamespace(
+            term_names=tuple(f"native_{i}" for i in range(12)), terms=arr(np.zeros(12)),
+            world_count=1, num_frames=1, contact_active=arr([0, 0])),
+            SimpleNamespace(weights=(1.,) * 12, object_orientation_weight=0., contact_blend_frames=0))
+        termination = OvernightTermination(SimpleNamespace(
+            world_count=1, terminated=arr([0], wp.int32), truncated=arr([0], wp.int32),
+            cause_names=("pelvis", "palm", "object"), cause_arrays=(arr([0], wp.int32),) * 3,
+            error_names=("error",), error_arrays=(arr([0]),),
+            packed_diagnostic_names=("pelvis", "palm", "object", "error"),
+            packed_diagnostics=arr([0] * 4)), None)
+        for protocol in (Objective, ObjectiveDiagnostics, CurriculumObjective):
+            self.assertIsInstance(objective, protocol)
+        for protocol in (Termination, TerminationDiagnostics, PackedTerminationDiagnostics):
+            self.assertIsInstance(termination, protocol)
+        self.assertIsInstance(OvernightObjectiveConfig(), ObjectiveSpec)
+        self.assertIsInstance(OvernightTerminationConfig(), TerminationSpec)
+
     def test_serializable_config_preserves_native_fields(self):
         from flash_chord.objectives.recon_body import ReconBodyObjectiveConfig
         from flash_chord.lifecycle.termination import ReconBodyTerminationConfig

@@ -101,6 +101,14 @@ After each candidate, diagnose the first remaining failure and change one focuse
 - Lower outer JAX fraction to **.60** to clip its oversized pool to about15158214656bytes, preserving more than5GB beyond observed JAX live usage while reclaiming about2.15GiB of reservation. Keep4M replay and23000MiB total guard. This follows measured allocation data; optimizer-update peak and sustained GPU behavior still need validation.
 - Next full screen is `candidate1_screen_retry3` from the same evaluated parent, using a new immutable source commit and the same ledger. All prior training attempts were below the fresh replay warmup threshold and did not change learned weights.
 
+### 03:03–03:07 New York — first refinement learning successfully
+
+- Deployed source commit **2951d24a059ed9840f6818f3b9e1884ee22d3ab4**, archive SHA256 `a65522fd0f1337af8bf4130ea373ff791ab792453a7c9a86d3822b9daae60061`; verified before extraction into its immutable source directory.
+- **Active bootstrap PID475486, learner PID475497**, output **`candidate1_screen_retry3`**, started07:02:52UTC. **Do not duplicate or stop this working screen.** Exact invocation is `bootstrap_retry3_launch.json`; current bootstrap state is `training_first_screen`.
+- At07:05:44UTC the screen had **2508800 additional transitions**, replay2471936, finite actor loss-1.79856 and critic loss2.04824, **zero skipped actor/critic updates**, throughput43906 transitions/s, globalVOC0. This verifies learning beyond fresh-replay warmup. Observed GPU peak **21687MiB** matches the measured reservation diagnosis and is below the unchanged23000 guard. No quality improvement has been established yet.
+- Pre-screen total charged GPU time including parent evaluation, failed startups and diagnostic was **475.508seconds**. Continue using the same ledger; previous attempts are retained. Current screen is capped at60M additional transitions/1800seconds and will automatically run full unassisted evaluation, then stop at `awaiting_agent_diagnosis`. Expected first comparison around07:30UTC/03:30NY if throughput holds.
+- Updated the existing heartbeat prompt to reflect the active worker,4M replay and.60 allocator setting; it remainsACTIVE every10minutes until14:00UTC. Do not create another automation. Local fallback policy/state pair is hash-verified in `outputs/overnight_best/`, with `local_backup_manifest.json` and parent evaluation JSONs.
+
 ## Next action for the scheduled continuation
 
 1. Inspect `bootstrap_status.json`, `ledger.json`, live processes and the old queue status. While old work continues, do not launch a GPU job. Do not rerun bootstrap or mutate its deployed source. Stay quiet for unchanged state.

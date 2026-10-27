@@ -156,6 +156,13 @@ After each candidate, diagnose the first remaining failure and change one focuse
 - Full extension evidence downloaded under `outputs/overnight_analysis/extension1/`; archive SHA `b3b927553fdd46517cfdaea2529835aa10f8206427516fc2108995cd19feef59`. The original candidate1 code branch, source snapshots and best checkpoint stay intact.
 - CPU diagnosis is `outputs/overnight_analysis/extension1_cpu_diagnosis.json`. A config comparison built from the actual screen1 compact state confirms candidate2 differs from an otherwise identical candidate1 continuation only in the two fine-position fields and method metadata; result `outputs/overnight_analysis/candidate2_config_delta.json`.
 
+### 04:59 New York — candidate2 precision screen launched
+
+- Committed/deployed **481b5233051da5093337d738759df460048b3dcf**; source archiveSHA **74c34c18c3e2e774e2ef82ba1e852653c7f97fcf3800a1d7b785e0776e566bc7**, verified before extraction. New objective changes raw replay term7 before both score and replay consumption, uses the same command object target as native, and preserves13 terms and default-zero compatibility. Independent source review found no blocking issue.
+- Local Warp CPU kernels passed16 tests (4 native checks unavailable locally). **All29 affected tests passed in the pinned remote native environment**, with CUDA hidden and JAX on CPU; includes native config/protocol checks. Nine launcher tests and the actual-parent config delta also passed. Log: `candidate2_cpu_verification.log`.
+- Launched **candidate2_precision_screen**, phase supervisor **505279**, at **08:59:47UTC**. Parent is protected screen1 state409997312; same50% recovery/50% exact-start refinement, fixed final weights and clocks. Max60M additional transitions/1800seconds then full unassisted evaluation; ledger candidateID is **candidate2**. GPU was idle and all prior jobs complete at launch.
+- Exact launch/source hash is in `candidate2_precision_screen_launch.json`; manifest/config hashes and status are separate immutable/run records. **Inspect `candidate2_precision_screen_status.json`; do not rerun bootstrap or any completed candidate1 phase.** Existing heartbeat now names this worker and source. Expected comparison around09:27UTC/05:27NY; keep screen1 best until full evaluation supports promotion.
+
 ## Next action for the scheduled continuation
 
 1. Inspect `bootstrap_status.json`, `ledger.json`, live processes and the old queue status. While old work continues, do not launch a GPU job. Do not rerun bootstrap or mutate its deployed source. Stay quiet for unchanged state.

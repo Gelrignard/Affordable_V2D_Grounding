@@ -49,6 +49,7 @@ def compose_refinement_objective(
     reference_wrist_quat: wp.array(dtype=wp.quat),
     reference_object_pos: wp.array(dtype=wp.vec3),
     reference_object_quat: wp.array(dtype=wp.quat),
+    object_target_pos: wp.array(dtype=wp.vec3),
     object_target_quat: wp.array(dtype=wp.quat),
     wrist_body_ids: wp.array(dtype=wp.int32),
     wrist_local_pos: wp.array(dtype=wp.vec3),
@@ -66,6 +67,8 @@ def compose_refinement_objective(
     hand_orientation_std: float,
     hand_orientation_factor: float,
     object_orientation_std: float,
+    object_position_fine_fraction: float,
+    object_position_fine_std: float,
     frame_dt: float,
     terms: wp.array(dtype=wp.float32),
     score: wp.array(dtype=wp.float32),
@@ -104,6 +107,14 @@ def compose_refinement_objective(
     base = world * 13
     for term in range(12):
         terms[base + term] = native_terms[world * 12 + term]
+    # Zero leaves the copied native term bit-for-bit unchanged. Use the command
+    # target, which can differ from the raw reference after scene transforms.
+    if object_position_fine_fraction > 0.0:
+        object_delta = wp.transform_get_translation(object_xf) - object_target_pos[world]
+        fine_position = wp.exp(-wp.dot(object_delta, object_delta)
+                               / (object_position_fine_std * object_position_fine_std))
+        terms[base + 7] = ((1.0 - object_position_fine_fraction) * terms[base + 7]
+                           + object_position_fine_fraction * fine_position)
     # Retain the native sum-over-two-hands exponential, avoiding another scale change.
     terms[base + 9] = wp.exp(-position_cost)
     terms[base + 10] = hand_orientation_factor * wp.exp(-orientation_cost)
@@ -214,6 +225,8 @@ def _require_runtime():
 class OvernightObjectiveConfig(_NativeObjectiveConfig):
     object_orientation_weight: float = 2.0
     object_orientation_std: float = 0.6
+    object_position_fine_fraction: float = 0.0
+    object_position_fine_std: float = 0.05
     contact_blend_frames: int = 10
     hand_position_tolerance: float = 0.03
     relative_hand_position_std: float = 0.15
@@ -225,12 +238,16 @@ class OvernightObjectiveConfig(_NativeObjectiveConfig):
         _require_runtime()
         super().__post_init__()
         vals = (self.object_orientation_weight, self.object_orientation_std,
+                self.object_position_fine_fraction, self.object_position_fine_std,
                 self.hand_position_tolerance, self.relative_hand_position_std,
                 self.hand_orientation_std, self.hand_orientation_factor)
         if not all(math.isfinite(v) for v in vals):
             raise ValueError("refinement objective parameters must be finite")
-        if min(self.object_orientation_std, self.relative_hand_position_std, self.hand_orientation_std) <= 0:
+        if min(self.object_orientation_std, self.object_position_fine_std,
+               self.relative_hand_position_std, self.hand_orientation_std) <= 0:
             raise ValueError("refinement objective standard deviations must be positive")
+        if not 0.0 <= self.object_position_fine_fraction <= 1.0:
+            raise ValueError("object_position_fine_fraction must be in [0, 1]")
         if self.hand_position_tolerance < 0 or not 0 <= self.hand_orientation_factor <= 1:
             raise ValueError("invalid hand tolerance or orientation factor")
         if int(self.contact_blend_frames) != self.contact_blend_frames or self.contact_blend_frames < 0:
@@ -291,12 +308,13 @@ class OvernightObjective:
         wp.launch(compose_refinement_objective, dim=n.world_count, inputs=[
             state.body_q, timestep, n.reference.wrist_pos_w, n.reference.wrist_quat_w,
             n.command.reference.body_pos_w, n.command.reference.body_quat_w,
-            n.command.body_target_quat_w, n.wrist_frames.body_ids,
+            n.command.body_target_pos_w, n.command.body_target_quat_w, n.wrist_frames.body_ids,
             n.wrist_frames.body_to_frame_pos, n.wrist_frames.body_to_frame_quat,
             self.contact_blend, n.terms, self.weights, n.num_frames,
             n.bodies_per_world, n.object_body_id, int(c.use_object_relative_hands),
             c.hand_position_tolerance, c.palm_position_std, c.relative_hand_position_std,
-            c.hand_orientation_std, c.hand_orientation_factor, c.object_orientation_std, n.frame_dt,
+            c.hand_orientation_std, c.hand_orientation_factor, c.object_orientation_std,
+            c.object_position_fine_fraction, c.object_position_fine_std, n.frame_dt,
         ], outputs=[self.terms, self.score], device=n.terms.device)
 
 

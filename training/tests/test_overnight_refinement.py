@@ -39,7 +39,8 @@ class ContactBlendTests(unittest.TestCase):
 
 class ObjectiveKernelTests(unittest.TestCase):
     def run_objective(self, blend=1., translation=(0, 0, 0), rotation=0., use_relative=True,
-                      hand_offset=(0, 0, 0), target_sign=1., tolerance=.03):
+                      hand_offset=(0, 0, 0), target_sign=1., tolerance=.03,
+                      fine_fraction=0., fine_std=.05, object_target=(0, 0, 0), native_position=None):
         # One rigid object and two palms; reference palms at +/- .1m on x.
         half = rotation / 2
         quat = np.array([0, 0, math.sin(half), math.cos(half)])
@@ -50,15 +51,18 @@ class ObjectiveKernelTests(unittest.TestCase):
         live_palms = reference_palms @ rotation_matrix.T + t + hand_offset
         body = np.concatenate([np.r_[t, quat][None], np.column_stack([live_palms, np.tile(quat, (2, 1))])])
         native = np.arange(12, dtype=np.float32) / 12
+        if native_position is not None:
+            native[7] = native_position
         weights = np.arange(13, dtype=np.float32)
         terms, score = wp.zeros(13, device="cpu"), wp.zeros(1, device="cpu")
         wp.launch(compose_refinement_objective, dim=1, inputs=[
             arr(body, wp.transform), arr([0], wp.int32), arr(reference_palms, wp.vec3),
             arr([[0, 0, 0, 1]] * 2, wp.quat), arr([[0, 0, 0]], wp.vec3),
-            arr([[0, 0, 0, 1]], wp.quat), arr([[0, 0, 0, target_sign]], wp.quat),
+            arr([[0, 0, 0, 1]], wp.quat), arr([object_target], wp.vec3),
+            arr([[0, 0, 0, target_sign]], wp.quat),
             arr([1, 2], wp.int32), arr([[0, 0, 0]] * 2, wp.vec3),
             arr([[0, 0, 0, 1]] * 2, wp.quat), arr([blend, blend]), arr(native), arr(weights),
-            1, 3, 0, int(use_relative), tolerance, .2, .15, .8, .25, .6, .02,
+            1, 3, 0, int(use_relative), tolerance, .2, .15, .8, .25, .6, fine_fraction, fine_std, .02,
         ], outputs=[terms, score], device="cpu")
         return terms.numpy(), score.numpy()[0], weights, native
 
@@ -91,6 +95,39 @@ class ObjectiveKernelTests(unittest.TestCase):
         b, _, _, _ = self.run_objective(rotation=.6, target_sign=-2.)
         self.assertAlmostEqual(float(a[12]), float(b[12]), places=6)
         self.assertAlmostEqual(float(a[12]), math.exp(-1), places=5)
+
+    def test_zero_fine_fraction_preserves_exact_native_term_and_score(self):
+        original, original_score, _, native = self.run_objective(translation=(.06, 0, 0))
+        disabled, disabled_score, _, _ = self.run_objective(
+            translation=(.06, 0, 0), fine_fraction=0., fine_std=.0001, object_target=(10, 20, 30))
+        np.testing.assert_array_equal(disabled, original)
+        self.assertEqual(disabled_score, original_score)
+        self.assertEqual(disabled[7], native[7])
+
+    def test_fine_position_uses_command_target_and_preserves_peak(self):
+        # Raw reference stays at the origin; the live object and command coincide
+        # far away. Looking up the raw reference would incorrectly yield zero.
+        terms, _, _, _ = self.run_objective(translation=(.25, -.2, .1),
+            object_target=(.25, -.2, .1), fine_fraction=1 / 3, native_position=1.)
+        self.assertEqual(terms[7], 1.)
+        shifted, _, _, _ = self.run_objective(translation=(.29, -.2, .1),
+            object_target=(.25, -.2, .1), fine_fraction=1., fine_std=.05)
+        self.assertAlmostEqual(float(shifted[7]), math.exp(-(.04 / .05) ** 2), places=6)
+
+    def test_precision_mixture_near_far_and_raw_score_consistency(self):
+        for error in (0., .03, .06, .10, .20, .50):
+            with self.subTest(error=error):
+                native_position = math.exp(-(error / .2) ** 2)
+                broad, broad_score, _, _ = self.run_objective(
+                    translation=(error, 0, 0), native_position=native_position)
+                mixed, score, weights, _ = self.run_objective(
+                    translation=(error, 0, 0), native_position=native_position, fine_fraction=1 / 3)
+                expected = (2 / 3) * native_position + math.exp(-(error / .05) ** 2) / 3
+                self.assertEqual(mixed.shape, (13,))
+                self.assertAlmostEqual(float(mixed[7]), expected, places=6)
+                np.testing.assert_array_equal(np.delete(mixed, 7), np.delete(broad, 7))
+                self.assertAlmostEqual(float(score), float(.02 * np.dot(weights, mixed)), places=6)
+                self.assertAlmostEqual(float(score - broad_score), float(.02 * weights[7] * (mixed[7] - broad[7])), places=6)
 
 
 class TerminationKernelTests(unittest.TestCase):
@@ -237,6 +274,20 @@ class WrapperTests(unittest.TestCase):
 
 @unittest.skipIf(_RUNTIME_IMPORT_ERROR is not None, "pinned simulator runtime is unavailable")
 class NativeIntegrationTests(unittest.TestCase):
+    def test_precision_config_defaults_bounds_and_serialization(self):
+        config = OvernightObjectiveConfig()
+        self.assertEqual(config.object_position_fine_fraction, 0.)
+        self.assertEqual(config.object_position_fine_std, .05)
+        selected = OvernightObjectiveConfig(object_position_fine_fraction=1 / 3, object_position_fine_std=.05)
+        self.assertEqual(OvernightObjectiveConfig(**asdict(selected)), selected)
+        for fraction in (-.01, 1.01, float('nan'), float('inf')):
+            with self.subTest(fraction=fraction), self.assertRaises(ValueError):
+                OvernightObjectiveConfig(object_position_fine_fraction=fraction)
+        for std in (0., -.01, float('nan'), float('inf')):
+            with self.subTest(std=std), self.assertRaises(ValueError):
+                OvernightObjectiveConfig(object_position_fine_std=std)
+        OvernightObjectiveConfig(object_position_fine_fraction=1.)
+
     def test_wrappers_satisfy_all_native_runtime_protocols(self):
         from flash_chord.objectives.composition import (
             Objective, ObjectiveDiagnostics, CurriculumObjective, ObjectiveSpec,

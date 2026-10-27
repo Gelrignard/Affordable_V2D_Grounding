@@ -1,4 +1,4 @@
-"""Bounded native FlashSAC warm starts with fresh 4M GPU replay and zero training VOC.
+"""Candidate2 native FlashSAC precision refinement with fresh 4M GPU replay.
 
 Training and evaluation are separate processes. This command never evaluates a
 checkpoint while its training allocation is resident. The outer overnight
@@ -119,6 +119,8 @@ def build_config(saved, *, state, output, start, end, phase, checkpoint_interval
                       "object_orientation_std": 0.6, "contact_blend_frames": 10,
                       "hand_position_tolerance": 0.03, "relative_hand_position_std": 0.15,
                       "hand_orientation_std": 0.8, "hand_orientation_factor": 0.25,
+                      "object_position_fine_fraction": 1.0 / 3.0,
+                      "object_position_fine_std": 0.05,
                       "use_object_relative_hands": True})
     objective["object_position_weight"] = 1.0 if phase == "refine" else 3.0
     objective["force_closure_weight"] = 5.0 if phase == "refine" else 1.0
@@ -159,6 +161,7 @@ def build_config(saved, *, state, output, start, end, phase, checkpoint_interval
         cfg["env"]["objective"][name + "_weight"] = weight
         cfg["objective"][name + "_weight"] = weight
     cfg["overnight"] = {"phase": phase, "refinement_start_steps": ramp_start,
+                        "method": "candidate2_position_precision_mixture",
                         "fresh_replay": True, "optimizer_horizon": OPTIMIZER_HORIZON,
                         "replay_capacity": REPLAY_CAPACITY, "replay_backend": "gpu",
                         "recovery_reset_assistance": phase == "refine"}

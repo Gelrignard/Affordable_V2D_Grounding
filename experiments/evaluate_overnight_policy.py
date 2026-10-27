@@ -50,7 +50,23 @@ def first_bad_frame(mask):
     return [int(np.flatnonzero(column)[0]) if column.any() else None for column in mask.T]
 
 
-def phase_analysis(achieved, reference, vertices, object_ids, *, invalid_worlds=()):
+def episode_phase_windows(frames, episode=5):
+    """Diagnostic windows; thirds are temporal partitions, not inferred task phases."""
+    windows = {"full_sequence": (0, frames)}
+    if episode == 5:
+        windows["handover_730_850"] = (730, min(851, frames))
+    else:
+        first, second = frames // 3, 2 * frames // 3
+        windows.update({
+            "early_third": (0, first),
+            "middle_third": (first, second),
+            "late_third": (second, frames),
+        })
+    windows["final_200"] = (max(0, frames - 200), frames)
+    return windows
+
+
+def phase_analysis(achieved, reference, vertices, object_ids, *, invalid_worlds=(), episode=5):
     """Pure NumPy analysis; frame bounds below are zero-based and end-exclusive."""
     achieved = np.asarray(achieved)
     reference = np.asarray(reference)
@@ -58,11 +74,7 @@ def phase_analysis(achieved, reference, vertices, object_ids, *, invalid_worlds=
     full = pose_metrics(achieved, reference, vertices, object_ids)
     invalid = sorted(set(full["invalid_worlds"]) | {int(w) for w in invalid_worlds})
     frames = achieved.shape[0]
-    windows = {
-        "full_sequence": (0, frames),
-        "handover_730_850": (730, min(851, frames)),
-        "final_200": (max(0, frames - 200), frames),
-    }
+    windows = episode_phase_windows(frames, episode)
     report = {
         "schema": "v2d_overnight_phases_v1",
         "frame_convention": "zero_based_local_reference_frames; intervals_end_exclusive",
@@ -325,7 +337,8 @@ def run(args):
         invalid_worlds=np.asarray(rollout.non_finite_worlds, dtype=np.int32),
     )
     phases = phase_analysis(rollout.achieved_pose_w, rollout.reference_pose_w, rollout.object_vertices_o,
-                            rollout.body_object_ids, invalid_worlds=rollout.non_finite_worlds)
+                            rollout.body_object_ids, invalid_worlds=rollout.non_finite_worlds,
+                            episode=args.episode)
     write_json(out / "phase_metrics.json", phases)
     scores = phases["phases"]["full_sequence"].get("scores", dict.fromkeys(("add_auc", "spider_sr", "maniptrans_sr", "mppe_cm")))
     if not rollout.non_finite_worlds:
@@ -376,7 +389,8 @@ def main():
     if args.analyze_rollout:
         with np.load(args.analyze_rollout, allow_pickle=False) as arrays:
             report = phase_analysis(arrays["achieved_pose_w"], arrays["reference_pose_w"], arrays["object_vertices_o"],
-                                    arrays["body_object_ids"], invalid_worlds=arrays["invalid_worlds"])
+                                    arrays["body_object_ids"], invalid_worlds=arrays["invalid_worlds"],
+                                    episode=args.episode)
         destination = Path(args.output)
         destination.mkdir(parents=True, exist_ok=True)
         write_json(destination / "phase_metrics.json", report)

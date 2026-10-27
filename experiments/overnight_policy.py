@@ -1,4 +1,4 @@
-"""Candidate2 native FlashSAC precision refinement with fresh 4M GPU replay.
+"""Native FlashSAC bootstrap or candidate2 refinement with fresh 4M GPU replay.
 
 Training and evaluation are separate processes. This command never evaluates a
 checkpoint while its training allocation is resident. The outer overnight
@@ -33,6 +33,7 @@ WORLDS = 2048
 REPLAY_CAPACITY = 4_000_000
 OPTIMIZER_HORIZON = 683592
 MAX_PHASE_SECONDS = 7200
+MAX_FRESH_SECONDS = 10800
 
 
 def read_header(path):
@@ -182,6 +183,76 @@ def build_config(saved, *, state, output, start, end, phase, checkpoint_interval
     return cfg
 
 
+def build_fresh_config(saved, *, output, end, checkpoint_interval):
+    """Bound a resolved native bootstrap without changing its method or curriculum."""
+    cfg = copy.deepcopy(saved)
+    if not isinstance(cfg, dict):
+        raise ValueError("Fresh config must be a resolved JSON object")
+    training = cfg.get("training", {})
+    task = cfg.get("task", {})
+    if cfg.get("overnight") or "reference" in cfg:
+        raise ValueError("Fresh native config must not contain refinement or checkpoint reference state")
+    if training.get("resume") is not False or training.get("checkpoint_path") is not None:
+        raise ValueError("Fresh native config requires resume=false and checkpoint_path=null")
+    if training.get("checkpoint", {}).get("load_replay_path") is not None:
+        raise ValueError("Fresh native config cannot restore replay")
+    if cfg.get("scene", {}).get("world_count") != WORLDS or training.get("world_count") != WORLDS:
+        raise ValueError("Fresh native bootstrap requires 2048 scene and training worlds")
+    if training.get("seed") != 42 or cfg.get("env", {}).get("reset", {}).get("seed") != 42:
+        raise ValueError("Fresh native bootstrap requires the native seed 42")
+    if task.get("source_frame_playback") is not True or task.get("motion_start_frame") != 0 or task.get("motion_end_frame") != -1:
+        raise ValueError("Fresh native bootstrap requires the full source-frame sequence")
+    parquet = task.get("parquet")
+    if not isinstance(parquet, str) or not Path(parquet).is_absolute() or not Path(parquet).is_file():
+        raise ValueError("Fresh native task parquet must be an existing absolute path")
+    if cfg.get("env", {}).get("objective", {}).get("_target_") != "flash_chord.objectives.recon_body.ReconBodyObjectiveConfig":
+        raise ValueError("Fresh bootstrap requires the native ReconBody objective")
+    curriculum = cfg.get("curriculum")
+    if not isinstance(curriculum, dict) or training.get("curriculum") != curriculum:
+        raise ValueError("Fresh native curriculum must be resolved and identical in training")
+    thresholds = [35000320, 70000640, 104998912, 139999232, 174999552,
+                  209999872, 288749568, 306249728, 349999104]
+    stages = curriculum.get("stages", [])
+    if curriculum.get("thresholds") != thresholds or [stage.get("voc_scale") for stage in stages] != [1., .75, .5, .25, .1, .05, 0., 0., 0.]:
+        raise ValueError("Fresh bootstrap must retain the native 350M VOC curriculum")
+    if cfg.get("voc_scale_override") is not None:
+        raise ValueError("Fresh bootstrap must not override the native VOC curriculum")
+    if end <= 0 or end % WORLDS or end > thresholds[-1]:
+        raise ValueError("Fresh bootstrap transition cap must align with worlds and not exceed native 350M")
+    if training.get("optimization", {}).get("learning_rate_schedule_updates") != OPTIMIZER_HORIZON:
+        raise ValueError("Fresh bootstrap must retain the native 350M optimizer horizon")
+    training.update(total_environment_steps=end, resume=False, checkpoint_path=None)
+    training["replay"].update(capacity=REPLAY_CAPACITY, batch_size=WORLDS)
+    training["checkpoint"].update(save_interval_environment_steps=checkpoint_interval,
+                                  save_replay=False, load_replay_path=None,
+                                  load_optimizer=False, load_reward_normalizer=False)
+    cfg["logging"].update(mode="offline", log_interval=25,
+                          upload_checkpoints=False, upload_training_state=False)
+    cfg["output_dir"] = str(output / "checkpoints")
+    return cfg
+
+
+def source_config(args, output):
+    """Resolve a fresh native configuration or the existing exact warm-start path."""
+    fresh = getattr(args, "fresh_config", None)
+    if fresh:
+        if args.phase != "refine":
+            raise ValueError("Fresh native bootstrap cannot start a consolidation phase")
+        saved = json.loads(Path(fresh).read_text(encoding="utf-8"))
+        start = 0
+        end, additional = transition_budget(start, args.additional_transitions)
+        cfg = build_fresh_config(saved, output=output, end=end,
+                                 checkpoint_interval=args.checkpoint_interval)
+        return cfg, saved, None, None, start, end, additional
+    state, policy, metadata = checkpoint_pair(args.checkpoint)
+    saved = json.loads(metadata["resolved_config_json"])
+    start = int(metadata["environment_steps"])
+    end, additional = transition_budget(start, args.additional_transitions)
+    cfg = build_config(saved, state=state, output=output, start=start, end=end,
+                       phase=args.phase, checkpoint_interval=args.checkpoint_interval)
+    return cfg, saved, state, policy, start, end, additional
+
+
 def remap_job(cfg, job, output):
     """Rebase identical portable input; refuse a hidden trajectory change on resume."""
     import pyarrow as pa
@@ -242,6 +313,31 @@ def checkpoint_stage_metadata(curriculum, environment_steps):
     return metadata
 
 
+def save_initial_checkpoint_once(context, learner, cfg, output, *, scalar, save_checkpoint):
+    """Save native initialization before compilation, action sampling or learning."""
+    if context.get("initial_checkpoint") is not None:
+        return context["initial_checkpoint"]
+    clocks = {"environment_steps": int(scalar(learner.environment_steps)),
+              "global_update_step": int(scalar(learner.global_update_step)),
+              "actor_schedule_step": int(scalar(learner.actor.schedule_step)),
+              "critic_schedule_step": int(scalar(learner.critic.schedule_step)),
+              "fresh_replay_size": int(scalar(learner.replay.size))}
+    if any(clocks.values()):
+        raise ValueError(f"Fresh initialization has nonzero clocks or replay: {clocks}")
+    stage = checkpoint_stage_metadata(cfg["curriculum"], 0)
+    metadata = {**context["kwargs"]["checkpoint_metadata"], **stage,
+                "environment_steps": 0, "global_update_step": 0,
+                "replay_included": False, "initialization": "native_fresh", "seed": cfg["training"]["seed"]}
+    paths = save_checkpoint(output / "checkpoints", learner, metadata=metadata, save_replay=False)
+    context["kwargs"]["logger"].log_checkpoint(paths, environment_steps=0,
+                                                metadata={**stage, "initialization": "native_fresh"})
+    record = {"saved_utc": utc_now(), "policy": str(paths.policy), "state": str(paths.training_state),
+              "seed": cfg["training"]["seed"], **stage, **clocks}
+    write_json(output / "initial_checkpoint.json", record)
+    context["initial_checkpoint"] = record
+    return record
+
+
 def run_child(args):
     from training import RUNTIME_COMMIT
     from training.bundles import sha256
@@ -253,20 +349,22 @@ def run_child(args):
         raise ValueError(f"Expected clean native runtime at {RUNTIME_COMMIT}")
     source = runtime / "robotic_grounding/flash_chord/src"
     sys.path.insert(0, str(source))
-    state, policy, metadata = checkpoint_pair(args.checkpoint)
-    saved = json.loads(metadata["resolved_config_json"])
-    start = int(metadata["environment_steps"])
-    end, additional = transition_budget(start, args.additional_transitions)
-    cfg = build_config(saved, state=state, output=output, start=start, end=end,
-                       phase=args.phase, checkpoint_interval=args.checkpoint_interval)
+    cfg, saved, state, policy, start, end, additional = source_config(args, output)
+    fresh = bool(getattr(args, "fresh_config", None))
     if args.job:
         remap_job(cfg, args.job, output)
     if not Path(cfg["task"]["parquet"]).is_file():
         raise FileNotFoundError(f"Saved task parquet is unavailable: {cfg['task']['parquet']}")
     write_json(output / "resolved_config.json", cfg)
     write_json(output / "provenance.json", {
-        "runtime_commit": commit, "source_state": str(state), "source_policy": str(policy),
-        "source_state_sha256": sha256(state), "source_policy_sha256": sha256(policy),
+        "runtime_commit": commit, "source_state": None if fresh else str(state),
+        "source_policy": None if fresh else str(policy),
+        "source_state_sha256": None if fresh else sha256(state),
+        "source_policy_sha256": None if fresh else sha256(policy),
+        "initialization": "native_fresh" if fresh else "native_warmstart",
+        "source_config": str(Path(args.fresh_config).resolve()) if fresh else None,
+        "source_config_sha256": sha256(args.fresh_config) if fresh else None,
+        "seed": cfg["training"].get("seed"),
         "source_environment_steps": start, "additional_transition_cap": additional,
         "absolute_transition_cap": end, "optimizer_horizon": OPTIMIZER_HORIZON,
         "replay_capacity": REPLAY_CAPACITY, "replay_is_fresh": True,
@@ -276,8 +374,11 @@ def run_child(args):
         "jax_preallocate": os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE"),
         "replay_warmup_action": cfg["training"]["exploration"]["warmup_action"],
         "source_replay_warmup_action": saved["training"].get("exploration", {}).get("warmup_action", "uniform"),
-        "phase": args.phase, "created_utc": utc_now(), "harness_sha256": sha256(__file__),
-        "training_voc_scale": 0.0, "recovery_reset_voc_scale": cfg["env"]["reset"]["reset_voc_scale"],
+        "phase": "native_bootstrap" if fresh else args.phase,
+        "created_utc": utc_now(), "harness_sha256": sha256(__file__),
+        "training_voc_scale": checkpoint_stage_metadata(cfg["curriculum"], start)["voc_scale"],
+        "training_voc_schedule": [stage["voc_scale"] for stage in cfg["curriculum"]["stages"]],
+        "recovery_reset_voc_scale": cfg["env"]["reset"]["reset_voc_scale"],
         "reset_freeze_steps": cfg["env"]["reset"]["reset_freeze_steps"],
     })
     import jax
@@ -368,7 +469,7 @@ def run_child(args):
             record = {"time_utc": utc_now(), "environment_steps": environment_steps,
                       "additional_transitions": environment_steps - start,
                       "policy": str(paths.policy), "state": str(paths.training_state),
-                      "phase": args.phase, **metadata}
+                      "phase": "native_bootstrap" if fresh else args.phase, **metadata}
             write_json(output / "latest_checkpoint.json", record)
             with (output / "checkpoints.jsonl").open("a") as stream:
                 stream.write(json.dumps(record) + "\n")
@@ -419,15 +520,21 @@ def run_child(args):
         memory_snapshot("restored_after_parity", restored)
         return restored, info
 
-    runner.restore_learner_checkpoint = checked_restore
+    if not fresh:
+        runner.restore_learner_checkpoint = checked_restore
 
     def save_and_stop(learner):
         jax.block_until_ready(learner.global_update_step)
         steps = int(jax.device_get(learner.environment_steps))
+        if fresh and steps == 0 and context.get("initial_checkpoint") is not None:
+            initial = context["initial_checkpoint"]
+            write_json(output / "graceful_stop.json", {"reason": stop["reason"], "environment_steps": 0,
+                                                       "policy": initial["policy"], "saved_utc": utc_now()})
+            raise ControlledStop(stop["reason"])
         info = dict(context["kwargs"]["checkpoint_metadata"])
         stage_info = checkpoint_stage_metadata(cfg["curriculum"], steps)
         info.update(environment_steps=steps, global_update_step=int(jax.device_get(learner.global_update_step)),
-                    voc_scale=0.0, replay_included=False, overnight_stop_reason=stop["reason"])
+                    replay_included=False, overnight_stop_reason=stop["reason"])
         info.update(stage_info)
         paths = runner.save_learner_checkpoint(output / "checkpoints", learner, metadata=info, save_replay=False)
         context["kwargs"]["logger"].log_checkpoint(paths, environment_steps=steps,
@@ -439,6 +546,9 @@ def run_child(args):
     original_compile = runner._compile_executables
 
     def bounded_compile(executables, learner, **kwargs):
+        if fresh:
+            save_initial_checkpoint_once(context, learner, cfg, output, scalar=jax.device_get,
+                                         save_checkpoint=runner.save_learner_checkpoint)
         if stop["reason"]:
             save_and_stop(learner)
         memory_snapshot("compile_before", learner)
@@ -471,18 +581,25 @@ def run_child(args):
 
 def supervise(args):
     output = Path(args.output).resolve()
-    state, policy, metadata = checkpoint_pair(args.checkpoint)
-    start_steps = int(metadata["environment_steps"])
-    end_steps, additional = transition_budget(start_steps, args.additional_transitions)
+    fresh = bool(getattr(args, "fresh_config", None))
+    if fresh:
+        _, _, state, policy, start_steps, end_steps, additional = source_config(args, output)
+    else:
+        state, policy, metadata = checkpoint_pair(args.checkpoint)
+        start_steps = int(metadata["environment_steps"])
+        end_steps, additional = transition_budget(start_steps, args.additional_transitions)
     remaining = min(float(args.max_seconds), deadline_timestamp(args.deadline_utc) - time.time())
     if remaining <= args.stop_grace_seconds + 5:
         raise ValueError("Insufficient time before deadline to start safely")
     output.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
-    status = {"state": "starting", "started_utc": utc_now(), "source_checkpoint": str(state),
-              "source_policy": str(policy), "initial_steps": start_steps, "absolute_transition_cap": end_steps,
+    status = {"state": "starting", "started_utc": utc_now(),
+              "source_checkpoint": None if fresh else str(state), "source_policy": None if fresh else str(policy),
+              "source_config": str(Path(args.fresh_config).resolve()) if fresh else None,
+              "initial_steps": start_steps, "absolute_transition_cap": end_steps,
               "additional_transition_cap": additional, "wall_seconds_cap": remaining,
-              "deadline_utc": args.deadline_utc, "phase": args.phase, "arguments": vars(args)}
+              "deadline_utc": args.deadline_utc, "phase": "native_bootstrap" if fresh else args.phase,
+              "arguments": vars(args)}
     write_json(output / "status.json", status)
     environment = os.environ.copy()
     environment.update(XLA_PYTHON_CLIENT_PREALLOCATE="false", PYTHONUNBUFFERED="1",
@@ -560,7 +677,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("train",))
     parser.add_argument("--runtime", required=True)
-    parser.add_argument("--checkpoint", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--checkpoint")
+    source.add_argument("--fresh-config", help="Resolved native bootstrap JSON; never restores a learner")
     parser.add_argument("--output", required=True)
     parser.add_argument("--job")
     parser.add_argument("--phase", choices=("refine", "consolidate"), default="refine")
@@ -572,8 +691,9 @@ def main():
     parser.add_argument("--stop-grace-seconds", type=int, default=30)
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if not 0 < args.max_seconds <= MAX_PHASE_SECONDS:
-        parser.error("Each command must have a positive wall budget of at most 7200 seconds")
+    max_seconds = MAX_FRESH_SECONDS if args.fresh_config else MAX_PHASE_SECONDS
+    if not 0 < args.max_seconds <= max_seconds:
+        parser.error(f"This command must have a positive wall budget of at most {max_seconds} seconds")
     if not 1 <= args.stop_grace_seconds < args.max_seconds or args.checkpoint_interval <= 0:
         parser.error("Invalid checkpoint cadence or graceful-stop reserve")
     if args.additional_transitions < WORLDS:

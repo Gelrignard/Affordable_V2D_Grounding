@@ -1,6 +1,12 @@
 """CPU checks for phase boundaries, failed cohorts and fixed diagnostic criteria."""
 
+import contextlib
+import io
+import json
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 import numpy as np
@@ -8,7 +14,9 @@ import numpy as np
 from experiments.evaluate_overnight_policy import (
     Trace,
     common_tracking_analysis,
+    episode_phase_windows,
     first_bad_frame,
+    main,
     phase_analysis,
     quat_multiply,
     quat_rotate,
@@ -69,6 +77,54 @@ class OvernightEvaluationTests(unittest.TestCase):
         result = phase_analysis(*poses(frames=100))
         self.assertFalse(result["phases"]["handover_730_850"]["available"])
         self.assertEqual(result["phases"]["final_200"]["frame_start"], 0)
+
+    def test_other_episode_thirds_partition_all_frames(self):
+        for episode, frames, boundaries in [(16, 477, (159, 318)), (18, 858, (286, 572))]:
+            with self.subTest(episode=episode):
+                first, second = boundaries
+                self.assertEqual(episode_phase_windows(frames, episode), {
+                    "full_sequence": (0, frames), "early_third": (0, first),
+                    "middle_third": (first, second), "late_third": (second, frames),
+                    "final_200": (frames - 200, frames),
+                })
+                a, r, v, ids = poses(frames=frames)
+                a[first:second, :, 0, 0] = .03
+                a[second:, :, 0, 0] = .06
+                result = phase_analysis(a, r, v, ids, episode=episode)
+                self.assertNotIn("handover_730_850", result["phases"])
+                for phase, expected in [("early_third", 0), ("middle_third", 3), ("late_third", 6)]:
+                    self.assertTrue(result["phases"][phase]["available"])
+                    self.assertAlmostEqual(result["phases"][phase]["position_mean_cm"], expected, places=5)
+                legacy = phase_analysis(a, r, v, ids)
+                self.assertEqual(result["phases"]["full_sequence"], legacy["phases"]["full_sequence"])
+                self.assertEqual(result["phases"]["final_200"], legacy["phases"]["final_200"])
+
+    def test_explicit_episode_five_preserves_default_report(self):
+        arrays = poses()
+        self.assertEqual(phase_analysis(*arrays), phase_analysis(*arrays, episode=5))
+
+    def test_generic_phase_invalid_cohort_remains_unscored(self):
+        result = phase_analysis(*poses(frames=477), episode=16, invalid_worlds=(1,))
+        self.assertEqual(result["invalid_worlds"], [1])
+        for phase in result["phases"].values():
+            self.assertFalse(phase["available"])
+            self.assertNotIn("scores", phase)
+
+    def test_cpu_cli_accepts_tier_one_episode_eighteen(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            a, r, v, ids = poses(frames=858)
+            source = root / "rollout.npz"
+            np.savez(source, achieved_pose_w=a, reference_pose_w=r, object_vertices_o=v,
+                     body_object_ids=ids, invalid_worlds=np.array([], dtype=int))
+            output = root / "analysis"
+            with patch("sys.argv", ["evaluate_overnight_policy", "--tier", "1", "--episode", "18",
+                                    "--analyze-rollout", str(source), "--output", str(output)]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    main()
+            result = json.loads((output / "phase_metrics.json").read_text())
+            self.assertEqual(result["phases"]["late_third"]["frame_start"], 572)
+            self.assertNotIn("handover_730_850", result["phases"])
 
     def test_frame_zero_failure_and_threshold_activation(self):
         self.assertEqual(first_bad_frame([[True, False], [False, True]]), [0, 1])

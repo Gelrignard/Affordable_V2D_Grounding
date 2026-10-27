@@ -6,16 +6,20 @@ import json
 from pathlib import Path
 import struct
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
 from experiments.overnight_policy import (
     OPTIMIZER_HORIZON,
     build_config,
+    build_fresh_config,
     checkpoint_pair,
     checkpoint_stage_metadata,
     deadline_timestamp,
     signal_child,
+    save_initial_checkpoint_once,
+    source_config,
     transition_budget,
 )
 
@@ -154,6 +158,122 @@ class OvernightPolicyTests(unittest.TestCase):
             paths[1].write_bytes(struct.pack("<Q", len(payload)) + payload)
             with self.assertRaises(ValueError):
                 checkpoint_pair(paths[0])
+
+
+class FreshNativePolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.output = Path(self.temp.name)
+        self.parquet = self.output / "motion.parquet"
+        self.parquet.write_bytes(b"prepared job is checked by native scene setup")
+        self.saved = saved_config()
+        self.saved["task"].update(parquet=str(self.parquet), motion_start_frame=0, motion_end_frame=-1)
+        self.saved["env"]["objective"]["_target_"] = "flash_chord.objectives.recon_body.ReconBodyObjectiveConfig"
+        self.saved["env"]["reset"].update(seed=42, reset_voc_scale=1.0)
+        self.saved["training"].update(seed=42, world_count=2048, resume=False, checkpoint_path=None)
+        self.saved["training"]["optimization"]["learning_rate_schedule_updates"] = OPTIMIZER_HORIZON
+        self.saved["voc_scale_override"] = None
+        self.saved["curriculum"] = {
+            "thresholds": [35000320, 70000640, 104998912, 139999232, 174999552,
+                           209999872, 288749568, 306249728, 349999104],
+            "stages": [{"voc_scale": scale, "objective_weights": {"object_position": 1},
+                        "immediate_first_frame_probability": probability}
+                       for scale, probability in zip([1., .75, .5, .25, .1, .05, 0., 0., 0.],
+                                                     [0.] * 7 + [.25, .5])],
+        }
+        self.saved["training"]["curriculum"] = copy.deepcopy(self.saved["curriculum"])
+
+    def build(self, saved=None):
+        return build_fresh_config(self.saved if saved is None else saved, output=self.output,
+                                  end=349999104, checkpoint_interval=50_000_000)
+
+    def test_fresh_preserves_native_method_and_does_not_restore_any_state(self):
+        original = copy.deepcopy(self.saved)
+        cfg = self.build()
+        self.assertEqual(self.saved, original)
+        for key in ("env", "task", "curriculum", "scene"):
+            self.assertEqual(cfg[key], original[key])
+        self.assertNotIn("overnight", cfg)
+        self.assertFalse(cfg["training"]["resume"])
+        self.assertIsNone(cfg["training"]["checkpoint_path"])
+        self.assertFalse(cfg["training"]["checkpoint"]["load_optimizer"])
+        self.assertFalse(cfg["training"]["checkpoint"]["load_reward_normalizer"])
+        self.assertEqual(cfg["training"]["replay"]["capacity"], 4_000_000)
+        self.assertEqual(cfg["training"]["network"], original["training"]["network"])
+        self.assertEqual(cfg["training"]["seed"], 42)
+        self.assertEqual(cfg["training"]["checkpoint"]["save_interval_environment_steps"], 50_000_000)
+        self.assertEqual(checkpoint_stage_metadata(cfg["curriculum"], 0)["voc_scale"], 1)
+        self.assertEqual(checkpoint_stage_metadata(cfg["curriculum"], 70_000_640)["voc_scale"], .5)
+        self.assertEqual(checkpoint_stage_metadata(cfg["curriculum"], 209_999_872)["voc_scale"], 0)
+
+    def test_rejects_stale_resume_refinement_and_wrong_input_contracts(self):
+        changes = [
+            ("training", "resume", True), ("training", "checkpoint_path", "state_123.safetensors"),
+            ("training", "world_count", 16), ("scene", "world_count", 16),
+            ("training", "seed", 0), ("task", "source_frame_playback", False),
+            ("task", "motion_start_frame", 10), ("task", "parquet", "missing.parquet"),
+        ]
+        for section, key, value in changes:
+            with self.subTest(section=section, key=key):
+                cfg = copy.deepcopy(self.saved)
+                cfg[section][key] = value
+                with self.assertRaises(ValueError):
+                    self.build(cfg)
+        for key, value in (("overnight", {"refinement_start_steps": 0}),
+                           ("reference", {}), ("voc_scale_override", 0.0)):
+            with self.subTest(key=key):
+                cfg = copy.deepcopy(self.saved)
+                cfg[key] = value
+                with self.assertRaises(ValueError):
+                    self.build(cfg)
+        cfg = copy.deepcopy(self.saved)
+        cfg["training"]["checkpoint"]["load_replay_path"] = "replay.safetensors"
+        with self.assertRaises(ValueError):
+            self.build(cfg)
+        cfg = copy.deepcopy(self.saved)
+        cfg["training"]["optimization"]["learning_rate_schedule_updates"] = 100
+        with self.assertRaises(ValueError):
+            self.build(cfg)
+
+    def test_resolved_source_starts_at_zero_without_reading_checkpoint(self):
+        path = self.output / "fresh.json"
+        path.write_text(json.dumps(self.saved), encoding="utf-8")
+        args = SimpleNamespace(fresh_config=str(path), checkpoint=None, phase="refine",
+                               additional_transitions=60_000_000, checkpoint_interval=50_000_000)
+        with mock.patch("experiments.overnight_policy.checkpoint_pair") as pair:
+            cfg, _, state, policy, start, end, additional = source_config(args, self.output)
+        pair.assert_not_called()
+        self.assertEqual((state, policy, start), (None, None, 0))
+        self.assertEqual((end, additional), (59_998_208, 59_998_208))
+        self.assertFalse(cfg["training"]["resume"])
+        args.phase = "consolidate"
+        with self.assertRaises(ValueError):
+            source_config(args, self.output)
+
+    def test_initial_native_checkpoint_saved_once_before_learning_with_actual_voc(self):
+        cfg = self.build()
+        learner = SimpleNamespace(environment_steps=0, global_update_step=0,
+                                  actor=SimpleNamespace(schedule_step=0), critic=SimpleNamespace(schedule_step=0),
+                                  replay=SimpleNamespace(size=0))
+        paths = SimpleNamespace(policy=self.output / "policy_0.safetensors",
+                                training_state=self.output / "state_0.safetensors")
+        logger = mock.Mock()
+        context = {"kwargs": {"checkpoint_metadata": {"policy_schema_json": "actor"}, "logger": logger}}
+        save = mock.Mock(return_value=paths)
+        first = save_initial_checkpoint_once(context, learner, cfg, self.output, scalar=int, save_checkpoint=save)
+        second = save_initial_checkpoint_once(context, learner, cfg, self.output, scalar=int, save_checkpoint=save)
+        self.assertEqual(first, second)
+        save.assert_called_once()
+        logger.log_checkpoint.assert_called_once()
+        metadata = save.call_args.kwargs["metadata"]
+        self.assertEqual((metadata["voc_scale"], metadata["environment_steps"], metadata["seed"]), (1, 0, 42))
+        self.assertFalse(save.call_args.kwargs["save_replay"])
+        self.assertEqual(json.loads((self.output / "initial_checkpoint.json").read_text())["fresh_replay_size"], 0)
+        learner.environment_steps = 2048
+        with self.assertRaises(ValueError):
+            save_initial_checkpoint_once({"kwargs": context["kwargs"]}, learner, cfg, self.output,
+                                         scalar=int, save_checkpoint=save)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ import argparse
 import contextlib
 import datetime as dt
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -18,6 +19,7 @@ import time
 
 UTC = dt.timezone.utc
 MAXIMUM_GPU_SECONDS = 6 * 3600
+MAXIMUM_CANDIDATE_TRAINING_SECONDS = 2 * 3600
 MAXIMUM_CANDIDATES = 3
 
 
@@ -47,19 +49,71 @@ def write_json(path, value):
     os.replace(temporary, path)
 
 
+def make_budget_policy(total_budget_seconds=MAXIMUM_GPU_SECONDS,
+                       candidate_training_budget_seconds=MAXIMUM_CANDIDATE_TRAINING_SECONDS,
+                       maximum_candidates=MAXIMUM_CANDIDATES):
+    """Canonical, finite budget settings; defaults preserve the original scope."""
+    for name, value in [('total_budget_seconds', total_budget_seconds),
+                        ('candidate_training_budget_seconds', candidate_training_budget_seconds)]:
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value <= 0):
+            raise ValueError(f'{name} must be a positive finite number')
+    if isinstance(maximum_candidates, bool) or not isinstance(maximum_candidates, int) or maximum_candidates < 1:
+        raise ValueError('maximum_candidates must be a positive integer')
+    return {'schema': 'v2d_gpu_budget_policy_v1',
+            'total_budget_seconds': float(total_budget_seconds),
+            'candidate_training_budget_seconds': float(candidate_training_budget_seconds),
+            'maximum_candidates': maximum_candidates}
+
+
+def ledger_budget_policy(ledger):
+    """Missing policy always means legacy limits, never a new expanded scope."""
+    if 'budget_policy' not in ledger:
+        return make_budget_policy()
+    policy = ledger['budget_policy']
+    if not isinstance(policy, dict) or set(policy) != set(make_budget_policy()):
+        raise RuntimeError('Ledger budget_policy is malformed; fail closed')
+    try:
+        canonical = make_budget_policy(policy['total_budget_seconds'],
+                                       policy['candidate_training_budget_seconds'],
+                                       policy['maximum_candidates'])
+    except ValueError as exc:
+        raise RuntimeError('Ledger budget_policy is invalid; fail closed') from exc
+    if policy != canonical:
+        raise RuntimeError('Ledger budget_policy schema is unsupported; fail closed')
+    return canonical
+
+
+def ensure_budget_policy(ledger, requested_policy, *, ledger_exists):
+    """Pin new ledgers; existing policies (including legacy) must match exactly.
+
+    The caller holds the ledger lock and persists this before starting or waiting
+    for a job. A policy-less existing ledger cannot acquire increased limits.
+    """
+    requested = ledger_budget_policy({'budget_policy': requested_policy})
+    if ledger_exists or 'budget_policy' in ledger:
+        existing = ledger_budget_policy(ledger)
+        if requested != existing:
+            raise RuntimeError('Requested budget policy differs from immutable ledger policy; '
+                               'use a new ledger for a separately authorized scope')
+    ledger['budget_policy'] = requested
+    return requested
+
+
 def remaining_budget(ledger, candidate, requested_seconds, kind='training'):
     jobs = ledger.get('jobs', [])
     if any(j.get('state') == 'running' for j in jobs):
         raise RuntimeError('Ledger contains a running job; reconcile its PID before launching')
+    policy = ledger_budget_policy(ledger)
     used = sum(float(j.get('elapsed_seconds', 0)) for j in jobs)
     candidates = {j['candidate'] for j in jobs if j.get('kind') == 'training'}
-    if kind == 'training' and candidate not in candidates and len(candidates) >= MAXIMUM_CANDIDATES:
-        raise RuntimeError('Three candidate implementation limit reached')
-    available = MAXIMUM_GPU_SECONDS - used
+    if kind == 'training' and candidate not in candidates and len(candidates) >= policy['maximum_candidates']:
+        raise RuntimeError(f"Candidate implementation limit ({policy['maximum_candidates']}) reached")
+    available = policy['total_budget_seconds'] - used
     if kind == 'training':
         trained = sum(float(j.get('elapsed_seconds', 0)) for j in jobs
                       if j.get('candidate') == candidate and j.get('kind') == 'training')
-        available = min(available, 2 * 3600 - trained)
+        available = min(available, policy['candidate_training_budget_seconds'] - trained)
     return max(0.0, min(float(requested_seconds), available))
 
 
@@ -135,10 +189,17 @@ def run(args):
     deadline = parse_deadline(args.deadline_utc)
     ledger_path = Path(args.ledger).resolve()
     with exclusive_lock(ledger_path.with_suffix('.lock')):
+        ledger_exists = ledger_path.exists()
         ledger = read_json(ledger_path, {'created_utc': utc_now(), 'jobs': []})
+        requested_policy = make_budget_policy(
+            getattr(args, 'total_budget_seconds', MAXIMUM_GPU_SECONDS),
+            getattr(args, 'candidate_training_budget_seconds', MAXIMUM_CANDIDATE_TRAINING_SECONDS),
+            getattr(args, 'maximum_candidates', MAXIMUM_CANDIDATES))
+        ensure_budget_policy(ledger, requested_policy, ledger_exists=ledger_exists)
         allowed = remaining_budget(ledger, args.candidate, args.max_seconds, args.kind)
         if allowed < 60 or deadline - time.time() < 60:
             raise RuntimeError('Insufficient remaining wall/calendar budget')
+        write_json(ledger_path, ledger)
         waited = time.monotonic()
         wait_status = ledger_path.with_name('wait_status.json')
         while True:
@@ -228,6 +289,13 @@ def main():
     p.add_argument('--candidate', required=True)
     p.add_argument('--kind', choices=['training', 'evaluation', 'smoke'], required=True)
     p.add_argument('--max-seconds', type=float, required=True)
+    p.add_argument('--total-budget-seconds', type=float, default=MAXIMUM_GPU_SECONDS,
+                   help='total charged GPU wall budget, including evaluations; immutable per ledger')
+    p.add_argument('--candidate-training-budget-seconds', type=float,
+                   default=MAXIMUM_CANDIDATE_TRAINING_SECONDS,
+                   help='cumulative training wall budget per candidate ID; immutable per ledger')
+    p.add_argument('--maximum-candidates', type=int, default=MAXIMUM_CANDIDATES,
+                   help='maximum distinct training candidate IDs; immutable per ledger')
     p.add_argument('--deadline-utc', default='2026-10-27T13:30:00Z')
     p.add_argument('--wait-queue', required=True)
     p.add_argument('--wait-seconds', type=float, default=0)

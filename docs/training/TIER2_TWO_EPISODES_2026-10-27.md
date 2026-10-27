@@ -1,0 +1,38 @@
+# Two Tier 2 episodes — October 27, 2026
+
+The user requested two Tier 2 episodes using the successful refinement method, without spending GPU time on a separate CHORD comparator. They also requested checks every 30 minutes, delegated to a monitoring subagent, with detailed checks kept out of the main conversation.
+
+Work only in the isolated policy-overnight checkout on codex/policy-two-episodes-20261027. The completed episode 5 and Tier 1 episode 16/18 trials remain protected. This is a new authorized two-episode trial, with its own immutable plan and ledger; it does not extend either earlier trial's limits. Do not start the 90-episode run under this authorization.
+
+## Scope and method
+
+- Tier 2 episode 3: alternating mug handle lifts, 781 frames.
+- Tier 2 episode 25: repeated bottle rotations and handovers, 859 frames.
+- Corrected portable jobs are taken from the existing tier2-rl checkout, with all job/source/asset hashes verified before copying. Tier 2 supplies noisy motion and contact inputs; it shares the underlying scenes with Tier 1. No clean Tier 1 reference enters training.
+- No compatible same-episode native FlashSAC parent was found locally or on the instance. Each episode therefore has one training lineage: fresh native seed42/SONIC initialization and native curriculum to349999104 transitions, then the same candidate2 precision refinement for at most60M further transitions. The initial training is needed to acquire the skill; it is not a separate comparison experiment. Bootstrap evaluation is explicitly disabled for this trial.
+- Refinement retains native FlashSAC, 4M GPU replay, 2048 worlds/batch, memory fraction.60 and23000MiB guard. Restore policy/optimizer/normalizer clocks exactly and refill fresh replay with the restored policy. Keep contact-phase object-relative hand guidance, recovery termination, original10M reward-ramp origin, and position shaping2/3 native.20m exponential plus1/3 .05m exponential. No parameter sweep or method change.
+- Refinement global VOC is zero. Recovery resets may retain brief native stabilization; all evaluation is exact frame0, zero global/reset assistance, no settling and no within-attempt resets. Every frame and world, including failures, must be retained.
+
+## Execution contract
+
+Remote root: /root/autodl-tmp/v2d/policy_tier2_two_20261027.
+
+Use the v2 two_episode_queue plan, candidate IDs tier2_episode_000003 and tier2_episode_000025, and exactly one guarded GPU worker. Do not restart a queue that already has status/ledger artifacts. Inspect plan.json, queue_status.json, ledger.json, active status/log/metrics and live PIDs before any action. Verify that the earlier episode16 continuation has exited before launch. Keep guard wait_queue pointing to the completed old10M queue, not an awaiting-agent-diagnosis trial root.
+
+Immutable limits: total23400 GPU wall seconds including evaluation; training10800 seconds per episode; maximum2 candidate IDs. Native acquisition has9000s child cap, refinement1800s child cap; supervision time counts toward the same caps. Every job enforces its own wall and calendar limits. Hard GPU deadline2026-10-28T03:00:00Z. Leave the instance powered on. No additional training extension is queued; evaluate useful saved refinement checkpoints before considering any further expenditure.
+
+Commit code before launch, archive that exact source, verify deployment SHA256, preserve source/input/effective configuration/checkpoint hashes and parentage, and record PIDs and charged time. Preserve native and selected refined policy/state separately. No automatic promotion.
+
+## Evaluation and reporting
+
+Run one full unassisted16-world evaluation after refinement per episode. The evaluator's input-reference scores are diagnostic because Tier 2 inputs are noisy. Recompute against the clean released reference on CPU using verified official conversion/metric code, without fitting achieved trajectories to the target or using the clean target in training. Record conversion and dataset provenance, frame coverage and remaining failure tails. Published CHORD results may be cited as a published reference; do not present a two-episode result as directly comparable to a full-tier aggregate or invent per-episode comparator values.
+
+Judge uninterrupted object trajectories, early/middle/late error, actual/reference hands, contacts, pelvis failures and optimizer health. Reward or fewer training terminations is not evidence of task success. Keep raw inspection logs and arrays in ignored outputs/tier2_two_episode_analysis and outputs/tier2_two_episode_monitor. Report only meaningful results, failures needing the user, or completion in the main conversation.
+
+## Monitoring
+
+The existing heartbeat is changed to every30minutes. Delegate routine inspection to /root/local_audit (or a replacement monitoring subagent if unavailable). Return a compact state-change summary to the parent; do not copy routine metric logs into the main context. The scheduler still wakes this chat; delegation limits the detailed material carried back. Pause the heartbeat after the final Tier 2 report, not merely after the earlier Tier 1 trial completes.
+
+## Launch record
+
+Pending source commit, remote CPU preflight and verified launch. Do not infer a running job from this document alone.

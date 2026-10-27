@@ -130,7 +130,8 @@ def verify_episode_inputs(episode):
 
 
 def validate_plan(plan):
-    if plan.get("schema") != "v2d_two_episode_trial_v1":
+    schema = plan.get("schema")
+    if schema not in ("v2d_two_episode_trial_v1", "v2d_two_episode_trial_v2"):
         raise ValueError("Unsupported trial plan schema")
     policy = budget_policy(plan)
     if (policy["total_budget_seconds"] > 23400 or policy["candidate_training_budget_seconds"] > 10800
@@ -143,13 +144,28 @@ def validate_plan(plan):
     if parse_deadline(plan["deadline_utc"]) - time.time() < 660:
         raise ValueError("Insufficient calendar time for training plus evaluation")
     episodes = plan["episodes"]
-    if len(episodes) != 2 or {(e["tier"], e["episode_index"]) for e in episodes} != {(1, 16), (1, 18)}:
-        raise ValueError("Trial must contain exactly corrected Tier 1 episodes 16 and 18")
+    if schema == "v2d_two_episode_trial_v1":
+        if len(episodes) != 2 or {(e["tier"], e["episode_index"]) for e in episodes} != {(1, 16), (1, 18)}:
+            raise ValueError("Trial must contain exactly corrected Tier 1 episodes 16 and 18")
+        if plan.get("evaluate_bootstrap", True) is not True:
+            raise ValueError("Legacy Tier 1 trial requires its bootstrap evaluation")
+    else:
+        if (len(episodes) != 2
+                or any(type(e.get("tier")) is not int or e["tier"] != 2
+                       or type(e.get("episode_index")) is not int
+                       or not 0 <= e["episode_index"] < 30 for e in episodes)
+                or len({e["episode_index"] for e in episodes}) != 2):
+            raise ValueError("Tier 2 trial requires exactly two distinct Tier 2 episode indices in 0..29")
+        if plan.get("evaluate_bootstrap") is not False:
+            raise ValueError("Tier 2 trial must explicitly skip bootstrap evaluation")
     root = Path(plan["root"]).resolve()
     reserved = []
     for episode in episodes:
         candidate = episode["candidate_id"]
-        if candidate != f"episode_{episode['episode_index']:06d}":
+        expected_candidate = f"episode_{episode['episode_index']:06d}"
+        if schema == "v2d_two_episode_trial_v2":
+            expected_candidate = "tier2_" + expected_candidate
+        if candidate != expected_candidate:
             raise ValueError("Candidate ID must be stable across an episode's stages")
         for phase in ("bootstrap", "refinement"):
             name = f"{candidate}_{phase}"
@@ -157,7 +173,8 @@ def validate_plan(plan):
             reserved.extend([output, output.with_name(output.name + "_evaluation"),
                              root / "supervision" / name, root / "supervision" / (name + "_evaluation"),
                              root / (name + "_planned_config.json"), root / (name + "_manifest.json")])
-        reserved.append(root / (candidate + "_comparison.json"))
+        suffix = "_comparison.json" if schema == "v2d_two_episode_trial_v1" else "_result.json"
+        reserved.append(root / (candidate + suffix))
     if len(set(reserved)) != len(reserved) or any(path.exists() for path in reserved):
         raise ValueError("Run paths overlap or already have artifacts; preserve them and use a new root")
     return policy
@@ -280,8 +297,11 @@ def run(plan_path):
                     state, actor, _ = checkpoint_pair(checkpoint)
                     manifest.update(parent_state=str(state), parent_state_sha256=file_hash(state),
                                     parent_policy=str(actor), parent_policy_sha256=file_hash(actor))
-                    parent_evaluation = Path(episode["bootstrap_output"]).with_name(Path(episode["bootstrap_output"]).name + "_evaluation") / "evaluation.json"
-                    manifest.update(parent_evaluation=str(parent_evaluation), parent_evaluation_sha256=file_hash(parent_evaluation))
+                    if plan.get("evaluate_bootstrap", True):
+                        parent_evaluation = Path(episode["bootstrap_output"]).with_name(Path(episode["bootstrap_output"]).name + "_evaluation") / "evaluation.json"
+                        manifest.update(parent_evaluation=str(parent_evaluation), parent_evaluation_sha256=file_hash(parent_evaluation))
+                    else:
+                        manifest["bootstrap_evaluation_performed"] = False
                     source_args = ["--checkpoint", str(state)]
                 immutable_json(root / (name + "_manifest.json"), manifest)
                 update(episode, phase)
@@ -323,7 +343,11 @@ def run(plan_path):
                 output = Path(episode["bootstrap_output"]).resolve()
                 native_config = bootstrap_configs[episode["candidate_id"]]
                 state, actor, metadata = train(episode, "bootstrap", native_config, additional=BOOTSTRAP_STEPS)
-                parent_path, parent_report, parent_scores = evaluate(episode, "bootstrap", actor, BOOTSTRAP_STEPS)
+                bootstrap = {"state": str(state), "state_sha256": file_hash(state),
+                             "policy": str(actor), "policy_sha256": file_hash(actor),
+                             "environment_steps": BOOTSTRAP_STEPS}
+                if plan.get("evaluate_bootstrap", True):
+                    parent_path, parent_report, parent_scores = evaluate(episode, "bootstrap", actor, BOOTSTRAP_STEPS)
                 end, additional = transition_budget(BOOTSTRAP_STEPS, plan["refinement_transitions"])
                 refine_config = build_config(json.loads(metadata["resolved_config_json"]), state=state,
                                              output=Path(episode["refinement_output"]).resolve(),
@@ -332,18 +356,27 @@ def run(plan_path):
                                            start=BOOTSTRAP_STEPS, additional=additional)
                 steps = int(metadata["environment_steps"])
                 result_path, result_report, result_scores = evaluate(episode, "refinement", actor, steps)
-                comparison_path = root / (episode["candidate_id"] + "_comparison.json")
-                immutable_json(comparison_path, {"source_commit": plan["source_commit"],
+                result = {"source_commit": plan["source_commit"],
                                "episode_index": episode["episode_index"], "tier": episode["tier"],
-                               "parent": parent_scores, "candidate": result_scores,
-                               "parent_evaluation": str(parent_path / "evaluation.json"),
+                               "candidate": result_scores,
                                "candidate_evaluation": str(result_path / "evaluation.json"),
-                               "parent_phase_metrics": parent_report["phase_metrics"], "phase_metrics": result_report["phase_metrics"],
+                               "phase_metrics": result_report["phase_metrics"],
                                "refinement_environment_steps": steps, "refinement_transition_target": end,
                                "refinement_transition_cap_reached": steps == end,
-                               "needs_agent_diagnosis": True, "automatic_promotion": False})
+                               "needs_agent_diagnosis": True, "automatic_promotion": False}
+                if plan.get("evaluate_bootstrap", True):
+                    result.update(parent=parent_scores, parent_evaluation=str(parent_path / "evaluation.json"),
+                                  parent_phase_metrics=parent_report["phase_metrics"])
+                    result_path = root / (episode["candidate_id"] + "_comparison.json")
+                    status_key = "comparison"
+                else:
+                    result.update(bootstrap_checkpoint=bootstrap, bootstrap_evaluation_performed=False,
+                                  published_baseline=plan.get("published_baseline"))
+                    result_path = root / (episode["candidate_id"] + "_result.json")
+                    status_key = "result"
+                immutable_json(result_path, result)
                 status["completed"].append({"episode_index": episode["episode_index"],
-                                            "comparison": str(comparison_path), "needs_agent_diagnosis": True})
+                                            status_key: str(result_path), "needs_agent_diagnosis": True})
                 write_json(status_path, status)
             status.update(state="awaiting_agent_diagnosis", active_episode=None, phase="complete", completed_utc=utc_now())
             write_json(status_path, status)

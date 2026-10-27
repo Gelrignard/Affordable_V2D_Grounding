@@ -31,12 +31,12 @@ def immutable_json(path, value):
         stream.write('\n')
 
 
-def validate_job(job, episode):
+def validate_job(job, episode, tier=1):
     job = Path(job).resolve()
     manifest = json.loads((job / 'job.json').read_text(encoding='utf-8'))
     if (manifest.get('schema'), manifest.get('tier'), manifest.get('episode_index'),
             manifest.get('variant'), manifest.get('runtime_commit')) != (
-            'v2d_policy_job_v1', 1, episode, 'corrected', RUNTIME_COMMIT):
+            'v2d_policy_job_v1', tier, episode, 'corrected', RUNTIME_COMMIT):
         raise ValueError('Unexpected task identity, variant or runtime')
     for name, expected in manifest['files'].items():
         path = (job / name).resolve()
@@ -45,7 +45,23 @@ def validate_job(job, episode):
     return job, manifest
 
 
-def prepare_episode(root, runtime, episode, job):
+def trial_settings(tier, episodes):
+    """Keep the original trial fixed; Tier 2 is a new, explicitly scoped plan."""
+    if tier == 1:
+        if episodes != [16, 18]:
+            raise ValueError('This authorized Tier 1 trial runs exactly episodes16 then18')
+        return {'schema': 'v2d_two_episode_trial_v1'}
+    if (tier != 2 or len(episodes) != 2 or len(set(episodes)) != 2
+            or any(type(ep) is not int or not 0 <= ep < 30 for ep in episodes)):
+        raise ValueError('Tier 2 requires exactly two distinct episode indices in 0..29')
+    return {'schema': 'v2d_two_episode_trial_v2', 'evaluate_bootstrap': False,
+            'published_baseline': {
+                'name': 'CHORD', 'source_url': 'https://nvidia-isaac.github.io/chord/',
+                'scope': 'Published reference only; not an episode-matched comparator run',
+                'metrics': None}}
+
+
+def prepare_episode(root, runtime, episode, job, tier=1):
     import pyarrow as pa
     import pyarrow.parquet as pq
     from pxr import Usd
@@ -54,15 +70,16 @@ def prepare_episode(root, runtime, episode, job):
     from flash_chord.training.flash_sac.config import TrainingConfig
     from omegaconf import OmegaConf
 
-    job, manifest = validate_job(job, episode)
+    job, manifest = validate_job(job, episode, tier)
     sequence = manifest['sequence_id']
     if not sequence or '/' in sequence or '\\' in sequence or sequence in ('.', '..'):
         raise ValueError('Invalid sequence component')
-    prepared = root / 'prepared' / f'episode_{episode:06d}'
+    candidate = f'episode_{episode:06d}' if tier == 1 else f'tier{tier}_episode_{episode:06d}'
+    prepared = root / 'prepared' / candidate
     prepared.mkdir(parents=True, exist_ok=False)
     motion_dir = prepared / 'input/retargeted' / f'sequence_id={sequence}' / 'robot_name=g1'
     motion_dir.mkdir(parents=True)
-    rows = pq.read_table(job / 'motion.parquet').to_pylist()
+    rows = pq.ParquetFile(job / 'motion.parquet').read().to_pylist()
     if len(rows) != 1 or rows[0]['sequence_id'] != sequence:
         raise ValueError('Job and motion identity differ')
     row = rows[0]
@@ -94,7 +111,7 @@ def prepare_episode(root, runtime, episode, job):
         'logging.upload_checkpoints=false', 'logging.upload_training_state=false',
     ]
     cfg = resolved_dict(compose_config('train_flash_sac', overrides))
-    bootstrap_output = root / f'episode_{episode:06d}_native'
+    bootstrap_output = root / f'{candidate}_native'
     cfg = build_fresh_config(cfg, output=bootstrap_output, end=349999104,
                              checkpoint_interval=50000000)
     # Instantiate configuration objects only; no physics scene or GPU allocation.
@@ -114,13 +131,13 @@ def prepare_episode(root, runtime, episode, job):
                       'estimated_force_guidance_used': False}
     input_path = prepared / 'input_manifest.json'
     immutable_json(input_path, input_manifest)
-    return {'episode_index': episode, 'tier': 1,
-            'candidate_id': f'episode_{episode:06d}', 'job': str(job),
+    return {'episode_index': episode, 'tier': tier,
+            'candidate_id': candidate, 'job': str(job),
             'sequence_id': sequence, 'source_frames': manifest['source_frames'],
             'bootstrap_output': str(bootstrap_output),
             'bootstrap_config': str(config_path), 'bootstrap_config_sha256': sha(config_path),
             'input_manifest': str(input_path), 'input_manifest_sha256': sha(input_path),
-            'refinement_output': str(root / f'episode_{episode:06d}_precision_screen')}
+            'refinement_output': str(root / f'{candidate}_precision_screen')}
 
 
 def main():
@@ -128,6 +145,9 @@ def main():
     for name in ('root', 'runtime', 'source-commit', 'source-archive-sha256', 'deadline-utc', 'wait-queue'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--episode-job', action='append', required=True, help='EPISODE=ABSOLUTE_JOB')
+    tier = parser.add_mutually_exclusive_group()
+    tier.add_argument('--tier', type=int, choices=(1, 2), default=1)
+    tier.add_argument('--tier2', dest='tier', action='store_const', const=2)
     args = parser.parse_args()
     parse_deadline(args.deadline_utc)
     if os.environ.get('CUDA_VISIBLE_DEVICES') != '' or os.environ.get('JAX_PLATFORMS') != 'cpu':
@@ -147,12 +167,11 @@ def main():
     for entry in args.episode_job:
         episode, job = entry.split('=', 1)
         pairs.append((int(episode), job))
-    if [episode for episode, _ in pairs] != [16, 18]:
-        raise ValueError('This authorized trial runs exactly episodes16 then18')
+    settings = trial_settings(args.tier, [episode for episode, _ in pairs])
     source_files = ['experiments/prepare_two_episode_policy.py', 'experiments/two_episode_queue.py',
                     'experiments/overnight_policy.py', 'experiments/overnight_guard.py',
                     'experiments/evaluate_overnight_policy.py', 'training/overnight_refinement.py']
-    plan = {'schema': 'v2d_two_episode_trial_v1', 'prepared_utc': utc_now(),
+    plan = {**settings, 'prepared_utc': utc_now(),
             'authorization': 'User requested the same method on two additional episodes, October27',
             'source_commit': args.source_commit, 'source_archive_sha256': args.source_archive_sha256,
             'source_file_sha256': {p: sha(SOURCE / p) for p in source_files},
@@ -163,7 +182,7 @@ def main():
             'bootstrap_wall_seconds': 9000, 'refinement_transitions': 60000000,
             'refinement_wall_seconds': 1800, 'evaluation_worlds': 16,
             'automatic_promotion': False, 'leave_instance_powered_on': True,
-            'episodes': [prepare_episode(root, runtime, episode, job) for episode, job in pairs]}
+            'episodes': [prepare_episode(root, runtime, episode, job, args.tier) for episode, job in pairs]}
     immutable_json(root / 'plan.json', plan)
     print(json.dumps({'plan': str(root / 'plan.json'), 'sha256': sha(root / 'plan.json'),
                       'episodes': [e['episode_index'] for e in plan['episodes']]}))

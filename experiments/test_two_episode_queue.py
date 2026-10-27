@@ -1,5 +1,7 @@
 """CPU-only checks for the two-episode queue's budget and provenance gates."""
 import datetime as dt
+from contextlib import nullcontext
+import copy
 import json
 from pathlib import Path
 import tempfile
@@ -10,6 +12,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from experiments import two_episode_queue as queue
+from experiments import prepare_two_episode_policy as prepare
 
 
 def plan(root):
@@ -30,7 +33,145 @@ def plan(root):
                          for ep, frames in [(16, 477), (18, 858)]]}
 
 
+def tier2_plan(root):
+    value = plan(root)
+    value.update(prepare.trial_settings(2, [3, 25]))
+    for item, episode, frames in zip(value["episodes"], [3, 25], [781, 859]):
+        item.update(episode_index=episode, tier=2, candidate_id=f"tier2_episode_{episode:06d}",
+                    source_frames=frames, sequence_id=f"sequence{episode}")
+    return value
+
+
 class TwoEpisodeQueueTests(unittest.TestCase):
+    def test_preparer_preserves_legacy_scope_and_explicitly_scopes_tier2(self):
+        self.assertEqual(prepare.trial_settings(1, [16, 18]), {"schema": "v2d_two_episode_trial_v1"})
+        self.assertIs(prepare.trial_settings(2, [3, 25])["evaluate_bootstrap"], False)
+        for tier, episodes in [(1, [3, 25]), (2, [3, 3]), (2, [-1, 25]),
+                               (2, [3, 30]), (2, [True, 25]), (2, [3]), (3, [3, 25])]:
+            with self.subTest(tier=tier, episodes=episodes), self.assertRaises(ValueError):
+                prepare.trial_settings(tier, episodes)
+
+    def test_tier2_rejects_wrong_tier_ids_collisions_and_comparator_evaluation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            valid = tier2_plan(root)
+            self.assertEqual(queue.validate_plan(valid)["maximum_candidates"], 2)
+            for key, value in [("tier", 1), ("tier", True), ("episode_index", -1),
+                               ("episode_index", 30), ("episode_index", 3.0),
+                               ("episode_index", True), ("candidate_id", "episode_000003")]:
+                bad = copy.deepcopy(valid)
+                bad["episodes"][0][key] = value
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    queue.validate_plan(bad)
+            for change in ("duplicate_id", "candidate_collision", "output_collision", "evaluate", "missing_flag"):
+                bad = copy.deepcopy(valid)
+                if change == "duplicate_id":
+                    bad["episodes"][1]["episode_index"] = 3
+                elif change == "candidate_collision":
+                    bad["episodes"][1]["candidate_id"] = bad["episodes"][0]["candidate_id"]
+                elif change == "output_collision":
+                    bad["episodes"][1]["bootstrap_output"] = bad["episodes"][0]["bootstrap_output"]
+                elif change == "evaluate":
+                    bad["evaluate_bootstrap"] = True
+                else:
+                    del bad["evaluate_bootstrap"]
+                with self.subTest(change=change), self.assertRaises(ValueError):
+                    queue.validate_plan(bad)
+            legacy = plan(root)
+            legacy["evaluate_bootstrap"] = False
+            with self.assertRaisesRegex(ValueError, "Legacy"):
+                queue.validate_plan(legacy)
+
+    def test_preparer_job_tier_defaults_to_one_and_checks_declared_tier(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = {"schema": "v2d_policy_job_v1", "tier": 2, "episode_index": 3,
+                    "variant": "corrected", "runtime_commit": prepare.RUNTIME_COMMIT, "files": {}}
+            (root / "job.json").write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, "identity"):
+                prepare.validate_job(root, 3)
+            self.assertEqual(prepare.validate_job(root, 3, 2)[1], data)
+
+    def test_actual_queue_path_skips_only_tier2_bootstrap_evaluation(self):
+        for tier in (1, 2):
+            with self.subTest(tier=tier), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                p = plan(root) if tier == 1 else tier2_plan(root)
+                registry, calls = {}, []
+                for episode in p["episodes"]:
+                    Path(episode["bootstrap_config"]).write_text("{}")
+                plan_path = root / "plan.json"
+                plan_path.write_text(json.dumps(p))
+
+                def saved_pair(output, steps, config):
+                    output.mkdir(parents=True, exist_ok=True)
+                    state, actor = output / f"state_{steps}.safetensors", output / f"policy_{steps}.safetensors"
+                    state.write_bytes(f"state {output} {steps}".encode())
+                    actor.write_bytes(f"actor {output} {steps}".encode())
+                    metadata = {"environment_steps": str(steps), "resolved_config_json": json.dumps(config)}
+                    registry[str(state.resolve())] = (state.resolve(), actor.resolve(), metadata)
+                    return state, actor
+
+                def fake_guard(plan_value, candidate, name, kind, seconds, command):
+                    calls.append((candidate, name, kind, command))
+                    output = Path(command[command.index("--output") + 1])
+                    episode = next(e for e in p["episodes"] if e["candidate_id"] == candidate)
+                    if kind == "training":
+                        config = queue.read_json(root / (name + "_planned_config.json"))
+                        steps = config["training"]["total_environment_steps"]
+                        state, actor = saved_pair(output, steps, config)
+                        queue.write_json(output / "status.json", {"state": "complete", "exit_code": 0})
+                        queue.write_json(output / "resolved_config.json", config)
+                        queue.write_json(output / "latest_checkpoint.json", {
+                            "state": str(state), "policy": str(actor), "environment_steps": steps})
+                        if "--fresh-config" in command:
+                            initial, _ = saved_pair(output, 0, config)
+                            queue.write_json(output / "initial_checkpoint.json", {"state": str(initial)})
+                    else:
+                        actor = Path(command[command.index("--checkpoint") + 1])
+                        steps = int(actor.stem.split("_")[-1])
+                        output.mkdir()
+                        report = {"checkpoint_sha256": queue.file_hash(actor), "environment_steps": steps,
+                                  "world_count": 16, "start_frame": 0, "reset_mode": "explicit", "settling_steps": 0,
+                                  "step_count": episode["source_frames"], "non_finite_worlds": [],
+                                  "evaluation_contract": {"frame_zero": True, "explicit_reset": True,
+                                      "within_attempt_resets": 0, "voc_scale": 0.0, "reset_voc_scale": 0.0,
+                                      "settling_steps": 0, "training_termination_disabled_during_rollout": True},
+                                  "leaderboard": {"scores": {"add_auc": .5, "mppe_cm": 5.0,
+                                                               "spider_sr": .5, "maniptrans_sr": .25}},
+                                  "phase_metrics": {"test": "complete"}}
+                        queue.write_json(output / "evaluation.json", report)
+
+                with patch.object(queue, "exclusive_lock", side_effect=lambda _: nullcontext()), \
+                     patch.object(queue, "verify_sources"), \
+                     patch.object(queue, "verify_episode_inputs", return_value={"verified": True}), \
+                     patch.object(queue, "build_fresh_config", side_effect=lambda config, **kw: {
+                         "training": {"total_environment_steps": kw["end"]}}), \
+                     patch.object(queue, "build_config", side_effect=lambda config, **kw: {
+                         "training": {"total_environment_steps": kw["end"]}}), \
+                     patch.object(queue, "checkpoint_pair", side_effect=lambda path: registry[str(Path(path).resolve())]), \
+                     patch.object(queue, "guarded", side_effect=fake_guard):
+                    queue.run(plan_path)
+                per_episode = ["training", "evaluation", "training", "evaluation"] if tier == 1 else ["training", "training", "evaluation"]
+                self.assertEqual([c[2] for c in calls], per_episode * 2)
+                for episode in p["episodes"]:
+                    candidate = episode["candidate_id"]
+                    manifest = queue.read_json(root / (candidate + "_refinement_manifest.json"))
+                    self.assertEqual(manifest["parent_policy_sha256"], queue.file_hash(manifest["parent_policy"]))
+                    self.assertEqual(manifest["parent_state_sha256"], queue.file_hash(manifest["parent_state"]))
+                    suffix = "_comparison.json" if tier == 1 else "_result.json"
+                    result = queue.read_json(root / (candidate + suffix))
+                    if tier == 1:
+                        self.assertIn("parent", result)
+                        self.assertIn("parent_evaluation_sha256", manifest)
+                    else:
+                        self.assertNotIn("parent", result)
+                        self.assertNotIn("parent_evaluation", manifest)
+                        self.assertIs(result["bootstrap_evaluation_performed"], False)
+                        self.assertEqual(result["published_baseline"], p["published_baseline"])
+                        self.assertFalse(Path(episode["bootstrap_output"] + "_evaluation").exists())
+                self.assertEqual(queue.read_json(root / "queue_status.json")["state"], "awaiting_agent_diagnosis")
+
     def test_plan_rejects_duplicate_existing_paths_and_wrong_episodes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

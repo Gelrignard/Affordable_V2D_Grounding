@@ -41,6 +41,11 @@ def run(args):
     )
     env.pop("XLA_PYTHON_CLIENT_ALLOCATOR", None)
     started = time.monotonic()
+    capacity = getattr(args, "replay_capacity", 5000000)
+    backend = getattr(args, "replay_backend", "gpu")
+    max_seconds = getattr(args, "max_seconds", 14400)
+    name = "native_5m" if backend == "gpu" else "native_host_10m"
+    variant = "native_flash_sac_5m" if backend == "gpu" else "native_flash_sac_host_10m"
     status = {
         "state": "running",
         "pid": os.getpid(),
@@ -50,7 +55,8 @@ def run(args):
         "runs": [],
         "scope": "corrected Tier 1 episode 5, seed 42",
         "total_transition_budget": BUDGET,
-        "replay_capacity": 5000000,
+        "replay_capacity": capacity,
+        "replay_backend": backend,
         "optimizer_batch_size": 2048,
         "fresh_training": True,
     }
@@ -89,9 +95,9 @@ def run(args):
         ).strip()
         if processes:
             raise RuntimeError(f"Unexpected compute processes: {processes}")
-        dest = out / "native_5m"
+        dest = out / name
         entry = {
-            "variant": "native_flash_sac_5m",
+            "variant": variant,
             "state": "training",
             "path": str(dest),
         }
@@ -116,13 +122,15 @@ def run(args):
                 "--batch-size",
                 "2048",
                 "--replay-capacity",
-                "5000000",
+                str(capacity),
+                "--replay-backend",
+                backend,
                 "--transitions",
                 str(BUDGET),
                 "--checkpoint-interval",
                 "10000384",
                 "--max-seconds",
-                "14400",
+                str(max_seconds),
                 "--memory-limit-mib",
                 "24200",
                 "--memory-poll-seconds",
@@ -133,9 +141,10 @@ def run(args):
                 "2048",
                 "--comparison-config",
                 args.comparison_config,
+                *(["--prune-intermediate-states"] if backend == "host" else []),
             ],
             out / "training_launcher.log",
-            14760,
+            max_seconds + 360,
         )
         entry["supervisor"] = read_json(dest / "status.json")
         metric = last_metric(dest / "metrics.jsonl")

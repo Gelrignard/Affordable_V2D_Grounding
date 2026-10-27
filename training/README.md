@@ -1,5 +1,52 @@
 # Policy training after trajectory correction
 
+## Native FlashSAC with 10M replay in system RAM
+
+The user authorized a real 10M replay comparison after the corrected Tier 1
+episode-5 5M run finished at AUC 0.334886 and MPPE 17.3827 cm (both success
+rates zero). `experiments/flash_sac_host_10m_20261027.json` specifies the test.
+This is native CHORD FlashSAC with a storage adapter, no world model or custom
+curriculum. The native vendor checkout stays pinned and unmodified.
+
+`training/host_replay.py` stores committed transitions in NumPy CPU arrays.
+Only allocation, append and gather are adapted; native JAX performs n-step
+aggregation, terminal handling, random sampling, reward relabeling and all
+optimizer updates. Ordered IO callbacks preserve read/write order inside the
+compiled learner. Pure callbacks would not be appropriate for mutable replay.
+The 10M payload uses 22,460,000,000 bytes of RAM. Only committed batches and
+sampled minibatches cross the host/device boundary; the full buffer never goes
+to GPU or disk. This backend is for one linearly advanced learner; forking its
+mutable replay state or saving/loading replay arrays is not supported.
+
+`experiments/verify_host_replay.py` compares native and host replay on the cloud
+GPU through wraparound, terminations, truncations, pending flushes, clearing and
+fixed-key sampling. It also compares the complete native learner in float32
+and mixed precision, including parameters, target networks, optimizer moments,
+losses, counters, RNG, actions and compact checkpoint restoration. Native
+restoration resets per-environment discounted returns and starts with empty
+replay; it does not restore simulator state. No full replay snapshot is saved.
+
+`experiments/run_flash_sac_host_10m.py` refuses a full run until current source
+hashes match successful parity and real 10M fill/rollover profiles. The profile
+must use 2048 worlds and batch 2048, have no skipped updates, and sustain at
+least 21k transitions/s over its last 20 logged samples (under 4.63h projected
+training, plus setup, within a five-hour session cap). The full comparison
+starts fresh at 349,999,104 transitions with native settings; typed learner
+config and trajectory hashes are checked against the saved 2M baseline.
+
+Every approximately 10M policy checkpoint is kept. To avoid filling the disk,
+only the latest two compact optimizer states and the 60/100/150/200/250/300M
+evaluation milestones are retained. After training, seven 16-world unassisted
+evaluations preserve raw trajectories and independently verified leaderboard
+metrics. Success and runtime of the larger replay must be measured separately.
+
+The October 27 UTC cleanup removed 101 redundant intermediate optimizer states
+from the three completed native full runs, recovering 15.06 GiB. Every policy,
+evaluation, log and source snapshot remains, along with each final optimizer
+state and the 5M run's 300M state. The cloud deletion manifest is
+`/root/autodl-tmp/v2d/checkpoint_cleanup_20261027.json`. The earlier paused
+custom SAC/WM checkpoint was untouched.
+
 **Preserved CHORD baseline, 26 October 2026:** the current cloud baseline uses
 NVIDIA's native JAX FlashCHORD FlashSAC learner, full-body G1/Dex3 simulation,
 and frozen SONIC. `experiments/native_chord_diagnostic.py --method native` is

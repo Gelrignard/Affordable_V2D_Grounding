@@ -243,6 +243,8 @@ def bounded_test_snapshot(root, relative, *, now, script, alive=None):
                 "progress": progress,
                 "training": entry.get("training"),
                 "peak_gpu_used_mib": training.get("peak_gpu_used_mib"),
+                "peak_host_rss_mib": training.get("peak_host_rss_mib"),
+                "host_replay": read_json(folder / "host_replay.json"),
                 "stop_reason": training.get("stop_reason"),
                 "learning_rate": metric.get("ppo/learning_rate"),
                 "skipped_update_fraction": metric.get(
@@ -472,6 +474,14 @@ def snapshot(root, *, now=None, alive=None):
             root, monitor["flash_sac_5m"], now=now, script="run_flash_sac_5m.py"
         )
         if monitor.get("flash_sac_5m")
+        else None,
+        "flash_sac_host_10m": bounded_test_snapshot(
+            root,
+            monitor["flash_sac_host_10m"],
+            now=now,
+            script="run_flash_sac_host_10m.py",
+        )
+        if monitor.get("flash_sac_host_10m")
         else None,
         "replay_capacity_refinement": bounded_test_snapshot(
             root,

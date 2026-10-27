@@ -190,6 +190,10 @@ def run_child(args):
                 **metrics,
             }
             self.stream.write(json.dumps(record, allow_nan=False) + "\n")
+            if args.replay_backend == "host":
+                from training.host_replay import snapshots
+
+                write_json(out / "host_replay.json", {"rings": snapshots()})
             write_json(
                 out / "progress.json",
                 {
@@ -223,6 +227,44 @@ def run_child(args):
                         **kwargs.get("metadata", {}),
                     },
                 )
+            if args.prune_intermediate_states:
+                directory = Path(paths.training_state).parent.resolve()
+                states = sorted(
+                    directory.glob("state_*.safetensors"),
+                    key=lambda path: int(path.stem.split("_")[-1]),
+                )
+                keep = set(states[-2:])
+                for target in (
+                    60_000_000,
+                    100_000_000,
+                    150_000_000,
+                    200_000_000,
+                    250_000_000,
+                    300_000_000,
+                ):
+                    match = next(
+                        (p for p in states if int(p.stem.split("_")[-1]) >= target),
+                        None,
+                    )
+                    if match is not None:
+                        keep.add(match)
+                for path in states:
+                    if path in keep:
+                        continue
+                    if path.is_symlink() or path.resolve().parent != directory:
+                        raise ValueError("Unsafe checkpoint retention path")
+                    with (out / "checkpoint_retention.jsonl").open("a") as record:
+                        record.write(
+                            json.dumps(
+                                {
+                                    "path": str(path),
+                                    "bytes": path.stat().st_size,
+                                    "time_utc": utc_now(),
+                                }
+                            )
+                            + "\n"
+                        )
+                    path.unlink()
 
     native.WandbLogger = LocalMetrics
     original_run = native.run_training
@@ -253,9 +295,10 @@ def run_child(args):
                 "logical_array_bytes": layout,
                 "gpu_before_learner": used,
                 "note": "Logical replay bytes exclude network/compiler/workspace allocations.",
+                "storage_location": args.replay_backend,
             },
         )
-        ring_mib = layout["ring_bytes"] / 2**20
+        ring_mib = layout["ring_bytes"] / 2**20 if args.replay_backend == "gpu" else 0
         # Observed native JAX allocation peaks exceeded logical replay bytes
         # substantially. Budget allocator/compiler temporaries conservatively.
         if (
@@ -267,6 +310,26 @@ def run_child(args):
             raise MemoryError(
                 "Replay preflight exceeds the configured ring/workspace allowance"
             )
+        if args.replay_backend == "host":
+            if config.checkpoint.save_replay or config.checkpoint.load_replay_path:
+                raise ValueError(
+                    "Host replay requires native compact checkpoints without replay"
+                )
+            maximum = Path("/sys/fs/cgroup/memory.max")
+            current = Path("/sys/fs/cgroup/memory.current")
+            if (
+                maximum.exists()
+                and current.exists()
+                and maximum.read_text().strip() != "max"
+                and int(current.read_text()) + 1.25 * layout["ring_bytes"]
+                > 0.9 * int(maximum.read_text())
+            ):
+                raise MemoryError(
+                    "Insufficient cgroup RAM for host replay and headroom"
+                )
+            from training.host_replay import install
+
+            install()
         if extension is not None:
             config = extension.bind(env, config)
         return original_run(env, config, **kwargs)
@@ -286,7 +349,14 @@ def run_child(args):
             "materialized_motion_sha256": sha256(motion),
             "overrides": overrides,
             "learner": "native_flash_chord_flash_sac",
-            "logger_only_replacement": extension is None,
+            "logger_only_replacement": extension is None
+            and args.replay_backend == "gpu",
+            "replay_backend": args.replay_backend,
+            "host_replay_source_sha256": sha256(
+                Path(__file__).resolve().parents[1] / "training/host_replay.py"
+            )
+            if args.replay_backend == "host"
+            else None,
             "method": args.method,
             "dynamics_weight": args.dynamics_weight,
             "harness_sha256": sha256(__file__),
@@ -362,6 +432,7 @@ def supervise(args):
         "started_utc": utc_now(),
         "arguments": vars(args),
         "peak_gpu_used_mib": 0,
+        "peak_host_rss_mib": 0,
         "memory_poll_seconds": args.memory_poll_seconds,
         "memory_limit_note": "Sampled guard plus replay preflight; not an OOM guarantee.",
     }
@@ -390,6 +461,20 @@ def supervise(args):
             while proc.poll() is None:
                 elapsed = time.monotonic() - start
                 sample = {"elapsed_s": elapsed, **gpu_memory()}
+                try:
+                    rss = next(
+                        line.split()[1]
+                        for line in Path(f"/proc/{proc.pid}/status")
+                        .read_text()
+                        .splitlines()
+                        if line.startswith("VmRSS:")
+                    )
+                    sample["host_rss_mib"] = int(rss) / 1024
+                    status["peak_host_rss_mib"] = max(
+                        status["peak_host_rss_mib"], sample["host_rss_mib"]
+                    )
+                except (OSError, StopIteration):
+                    pass
                 mem.write(json.dumps(sample) + "\n")
                 mem.flush()
                 status["elapsed_s"] = elapsed
@@ -399,6 +484,8 @@ def supervise(args):
                 if stop_reason is None:
                     if sample["used_mib"] > args.memory_limit_mib:
                         stop_reason = "memory_guard"
+                    elif sample.get("host_rss_mib", 0) > 90 * 1024:
+                        stop_reason = "host_memory_guard"
                     elif elapsed > args.max_seconds:
                         stop_reason = "time_budget"
                     if stop_reason:
@@ -444,6 +531,8 @@ def main():
     parser.add_argument("--worlds", type=int, default=1024)
     parser.add_argument("--batch-size", type=int, default=2048)
     parser.add_argument("--replay-capacity", type=int, default=1000000)
+    parser.add_argument("--replay-backend", choices=("gpu", "host"), default="gpu")
+    parser.add_argument("--prune-intermediate-states", action="store_true")
     parser.add_argument(
         "--comparison-config",
         help="Require identical learner config except replay capacity",

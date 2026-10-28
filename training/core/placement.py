@@ -1,8 +1,9 @@
 """Optional current-state supported placement shaping; no learned dynamics or history.
 
-The support bonus is an additive part of raw object-position term7. Palm costs
-are softened only for the withdrawing hand during the bounded release window.
-All changes happen before native n-step reward aggregation; use fresh replay.
+The support bonus is an additive part of raw object-position term7. Separate
+load-transfer, settling and finger-unloading credit replaces the previous
+all-factor readiness gate. Palm costs remain unchanged. All changes happen
+before native n-step reward aggregation; use fresh replay.
 """
 from __future__ import annotations
 
@@ -12,6 +13,15 @@ from pathlib import Path
 
 import numpy as np
 import warp as wp
+
+
+PLACEMENT_DIAGNOSTIC_NAMES = (
+    'support_load_fraction', 'object_linear_speed', 'object_angular_speed',
+    'placement_ready', 'method_window', 'placement_bonus',
+    'placement_load_credit', 'placement_settle_credit', 'placement_release_credit',
+    'placement_tilt_rad', 'placement_release_quality', 'placement_motion_quality',
+    'placement_spatial_compatibility', 'placement_upright_compatibility',
+)
 
 
 @wp.kernel
@@ -51,31 +61,25 @@ def aggregate_support_contacts(
                         wp.atomic_add(support_count, w0, 1)
 
 
-@wp.func
-def quaternion_angle(a: wp.quat, b: wp.quat):
-    return 2.0 * wp.acos(wp.clamp(wp.abs(wp.dot(wp.normalize(a), wp.normalize(b))), 0.0, 1.0))
-
-
 @wp.kernel
 def apply_supported_placement(
     body_q: wp.array(dtype=wp.transform), body_qd: wp.array(dtype=wp.spatial_vector),
     timestep: wp.array(dtype=wp.int32), support_force: wp.array(dtype=wp.vec3),
     hand_force: wp.array(dtype=wp.vec3), slots_per_world: int,
     centers: wp.array(dtype=wp.vec3), window: wp.array(dtype=wp.float32),
-    soften: wp.array(dtype=wp.float32), withdrawal: wp.array(dtype=wp.float32),
-    reference_wrist_pos: wp.array(dtype=wp.vec3), reference_wrist_quat: wp.array(dtype=wp.quat),
-    reference_object_pos: wp.array(dtype=wp.vec3), reference_object_quat: wp.array(dtype=wp.quat),
-    wrist_ids: wp.array(dtype=wp.int32), wrist_local_pos: wp.array(dtype=wp.vec3),
-    wrist_local_quat: wp.array(dtype=wp.quat), contact_blend: wp.array(dtype=wp.float32),
+    reference_object_quat: wp.array(dtype=wp.quat),
     weights: wp.array(dtype=wp.float32), num_frames: int, bodies_per_world: int,
     object_id: int, object_com: wp.vec3, object_weight: float,
     support_center: wp.vec3, support_normal: wp.vec3, support_radius: float,
-    use_relative: int, tolerance: float, world_std: float, relative_std: float,
-    orientation_std: float, orientation_factor: float, frame_dt: float,
+    frame_dt: float,
     terms: wp.array(dtype=wp.float32), score: wp.array(dtype=wp.float32),
     load_out: wp.array(dtype=wp.float32), linear_out: wp.array(dtype=wp.float32),
     angular_out: wp.array(dtype=wp.float32), ready_out: wp.array(dtype=wp.float32),
     window_out: wp.array(dtype=wp.float32), bonus_out: wp.array(dtype=wp.float32),
+    load_credit_out: wp.array(dtype=wp.float32), settle_credit_out: wp.array(dtype=wp.float32),
+    release_credit_out: wp.array(dtype=wp.float32), tilt_out: wp.array(dtype=wp.float32),
+    release_quality_out: wp.array(dtype=wp.float32), motion_quality_out: wp.array(dtype=wp.float32),
+    spatial_out: wp.array(dtype=wp.float32), upright_out: wp.array(dtype=wp.float32),
 ):
     w = wp.tid()
     frame = wp.clamp(timestep[w], 0, num_frames - 1)
@@ -83,7 +87,7 @@ def apply_supported_placement(
     velocity = body_qd[w * bodies_per_world + object_id]
     linear = wp.length(wp.spatial_top(velocity))
     angular = wp.length(wp.spatial_bottom(velocity))
-    load = wp.clamp(wp.dot(support_force[w], support_normal) / object_weight, 0.0, 2.0)
+    load = wp.max(wp.dot(support_force[w], support_normal) / object_weight, 0.0)
     delta = wp.transform_get_translation(xf) - centers[frame]
     distance = wp.max(wp.length(delta) - 0.03, 0.0)
     near = wp.exp(-distance * distance / (0.05 * 0.05))
@@ -91,49 +95,43 @@ def apply_supported_placement(
     planar = com_delta - wp.dot(com_delta, support_normal) * support_normal
     margin = support_radius - wp.length(planar)
     interior = wp.clamp(margin / 0.01, 0.0, 1.0)
-    motion = wp.exp(-linear * linear / (0.10 * 0.10) - angular * angular / (0.50 * 0.50))
-    angle = quaternion_angle(wp.transform_get_rotation(xf), reference_object_quat[frame])
-    pose = wp.exp(-angle * angle / (0.50 * 0.50))
-    ready = near * interior * motion * pose * wp.clamp((load - 0.2) / 0.6, 0.0, 1.0)
+    spatial = near * interior
+    # Inclination rejects stable tipping without adding another yaw target.
+    reference_up_o = wp.quat_rotate_inv(wp.normalize(reference_object_quat[frame]), support_normal)
+    actual_up_w = wp.quat_rotate(wp.normalize(wp.transform_get_rotation(xf)), reference_up_o)
+    tilt = wp.acos(wp.clamp(wp.dot(actual_up_w, support_normal), -1.0, 1.0))
+    upright = wp.clamp((0.7853981633974483 - tilt) / 0.5235987755982988, 0.0, 1.0)
+    overload = wp.max(load - 1.0, 0.0)
+    load_quality = wp.min(load, 1.0) / (1.0 + overload * overload)
+    motion = 1.0 / (1.0 + linear * linear / (0.20 * 0.20) + angular * angular / (1.0 * 1.0))
     hand_load = float(0.0)
     for i in range(slots_per_world):
         hand_load += wp.length(hand_force[w * slots_per_world + i])
     release_quality = 1.0 / (1.0 + (hand_load / (0.25 * object_weight)) ** 2.0)
-    bonus = 0.5 * window[frame] * ready * (0.5 + 0.5 * release_quality)
+    eligible = window[frame] * spatial * upright
+    load_credit = eligible * 0.20 * load_quality
+    settle_credit = eligible * 0.10 * load_quality * motion
+    release_credit = eligible * 0.20 * load_quality * motion * release_quality
+    bonus = load_credit + settle_credit + release_credit
     load_out[w] = load
     linear_out[w] = linear
     angular_out[w] = angular
-    ready_out[w] = ready
+    # Compatibility diagnostic only: full completion quality, not a reward gate.
+    ready_out[w] = spatial * upright * load_quality * motion * release_quality
     window_out[w] = window[frame]
     bonus_out[w] = bonus
+    load_credit_out[w] = load_credit
+    settle_credit_out[w] = settle_credit
+    release_credit_out[w] = release_credit
+    tilt_out[w] = tilt
+    release_quality_out[w] = release_quality
+    motion_quality_out[w] = motion
+    spatial_out[w] = spatial
+    upright_out[w] = upright
     # Zero-window performs no writes to terms/score, preserving the old path.
     if window[frame] > 0.0:
         base = w * 13
         terms[base + 7] += bonus
-        if soften[frame] > 0.0:
-            inv = wp.transform_inverse(xf)
-            ref_inv = wp.transform_inverse(wp.transform(reference_object_pos[frame], wp.normalize(reference_object_quat[frame])))
-            pcost = float(0.0)
-            qcost = float(0.0)
-            for hand in range(2):
-                i = frame * 2 + hand
-                bx = body_q[w * bodies_per_world + wrist_ids[hand]]
-                p = wp.transform_point(bx, wrist_local_pos[hand])
-                q = wp.normalize(wp.mul(wp.transform_get_rotation(bx), wrist_local_quat[hand]))
-                rp = reference_wrist_pos[i]
-                rq = wp.normalize(reference_wrist_quat[i])
-                blend = float(0.0)
-                if use_relative != 0:
-                    blend = contact_blend[i]
-                wd = wp.max(wp.length(p - rp) - tolerance, 0.0)
-                rd = wp.max(wp.length(wp.transform_point(inv, p) - wp.transform_point(ref_inv, rp)) - tolerance, 0.0)
-                factor = 1.0 - 0.8 * soften[frame] * withdrawal[i] * (1.0 - ready)
-                pcost += factor * ((1.0 - blend) * wd * wd / (world_std * world_std) + blend * rd * rd / (relative_std * relative_std))
-                wa = quaternion_angle(q, rq)
-                ra = quaternion_angle(wp.mul(wp.transform_get_rotation(inv), q), wp.mul(wp.transform_get_rotation(ref_inv), rq))
-                qcost += factor * ((1.0 - blend) * wa * wa + blend * ra * ra) / (orientation_std * orientation_std)
-            terms[base + 9] = wp.exp(-pcost)
-            terms[base + 10] = orientation_factor * wp.exp(-qcost)
         total = float(0.0)
         for i in range(13):
             total += weights[i] * terms[base + i]
@@ -211,13 +209,22 @@ class PlacementRuntime:
         table, support = table_from_native(reference, config, object_com_o=com)
         self.audit = dict(table.audit, support_body_id=self.support_id, object_body_id=native.object_body_id,
                           object_mass_kg=float(masses[0]), runtime_contact_force=True,
-                          raw_term_semantics='term7 += bounded support bonus; withdrawing hand costs in9/10 softened only insidewindow')
+                          method_identity='supported_load_transfer_v2',
+                          raw_term_semantics='term7 += load + settle + finger-unloading credit; all other12rawterms unchanged')
+        self.audit['diagnostic_semantics'] = {
+            'placement_ready': 'spatial * upright * load_quality * motion_quality * release_quality; completion diagnostic only, not a reward gate',
+            'support_load_fraction': 'nonnegative measured normal force / object weight, without upper clipping',
+            'placement_tilt_rad': 'inclination of reference-normal body axis relative to the support normal; excludes yaw',
+            'placement_release_quality': '1/(1+(sum of hand-slot force norms / (0.25mg))^2); measures finger unloading, not geometric clearance',
+            'credit_components': 'each includes the fixed window and unchanged spatial/COM compatibility; sum equals placement_bonus',
+        }
         self.audit['shaping_constants'] = {
-            'maximum_raw_object_bonus': 0.5, 'linear_speed_std_m_s': 0.10,
-            'angular_speed_std_rad_s': 0.50, 'orientation_std_rad': 0.50,
-            'support_load_fraction_ramp': [0.2, 0.8], 'hand_load_scale_mg': 0.25,
+            'maximum_raw_object_bonus': 0.5, 'component_weights': {'load': 0.20, 'settle': 0.10, 'release': 0.20},
+            'linear_speed_scale_m_s': 0.20, 'angular_speed_scale_rad_s': 1.0,
+            'tilt_full_credit_deg': 15.0, 'tilt_zero_credit_deg': 45.0,
+            'support_load_full_weight_mg': 1.0, 'overload_scale_mg': 1.0, 'hand_load_scale_mg': 0.25,
             'position_deadzone_m': 0.03, 'position_std_m': 0.05,
-            'support_edge_margin_m': 0.01, 'minimum_withdrawal_cost_fraction': 0.20,
+            'support_edge_margin_m': 0.01, 'palm_cost_relief': False,
             'gravity_w_m_s2': gravity.reshape(-1, 3)[0].tolist(),
         }
         # Verify the actual model shape, not only the metadata describing it.
@@ -240,12 +247,10 @@ class PlacementRuntime:
         device = native.terms.device
         self.centers = wp.array(table.centers_w, dtype=wp.vec3, device=device)
         self.window = wp.array(table.phase_mask, dtype=wp.float32, device=device)
-        self.soften = wp.array(table.soften_mask, dtype=wp.float32, device=device)
-        self.withdrawal = wp.array(table.withdrawal_mask.reshape(-1), dtype=wp.float32, device=device)
         self.force = wp.zeros(self.worlds, dtype=wp.vec3, device=device)
         self.count = wp.zeros(self.worlds, dtype=wp.int32, device=device)
         self.diagnostics = {'support_force_w_n': self.force}
-        for name in ('support_load_fraction', 'object_linear_speed', 'object_angular_speed', 'placement_ready', 'method_window', 'placement_bonus'):
+        for name in PLACEMENT_DIAGNOSTIC_NAMES:
             self.diagnostics[name] = wp.zeros(self.worlds, dtype=wp.float32, device=device)
         tracker = native.contact
         if getattr(tracker, '_placement_runtime', None) is not None:
@@ -267,18 +272,13 @@ class PlacementRuntime:
                     self.native.object_body_id, self.support_id], outputs=[self.force, self.count], device=self.force.device)
 
     def evaluate(self, owner, state, timestep):
-        n, c, d = self.native, self.config, self.diagnostics
+        n, d = self.native, self.diagnostics
         wp.launch(apply_supported_placement, dim=self.worlds, inputs=[
             state.body_q, state.body_qd, timestep, self.force, n.contact.contact_force_w,
-            n.contact.layout.slots_per_world, self.centers, self.window, self.soften, self.withdrawal,
-            n.reference.wrist_pos_w, n.reference.wrist_quat_w, n.command.reference.body_pos_w, n.command.reference.body_quat_w,
-            n.wrist_frames.body_ids, n.wrist_frames.body_to_frame_pos, n.wrist_frames.body_to_frame_quat,
-            owner.contact_blend, owner.weights, n.num_frames, self.bodies, n.object_body_id,
+            n.contact.layout.slots_per_world, self.centers, self.window, n.command.reference.body_quat_w,
+            owner.weights, n.num_frames, self.bodies, n.object_body_id,
             self.object_com, self.object_weight, self.support_center, self.support_normal, self.support_radius,
-            int(c.use_object_relative_hands), c.hand_position_tolerance, c.palm_position_std,
-            c.relative_hand_position_std, c.hand_orientation_std, c.hand_orientation_factor, n.frame_dt,
-            owner.terms, owner.score, d['support_load_fraction'], d['object_linear_speed'], d['object_angular_speed'],
-            d['placement_ready'], d['method_window'], d['placement_bonus']], device=self.force.device)
+            n.frame_dt, owner.terms, owner.score, *[d[name] for name in PLACEMENT_DIAGNOSTIC_NAMES]], device=self.force.device)
 
 
 def preflight_placement_config(resolved_config):

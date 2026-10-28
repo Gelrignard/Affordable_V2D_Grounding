@@ -160,7 +160,7 @@ def build_config(saved, *, state, output, start, end, phase, checkpoint_interval
         cfg["refinement"]["method"] = "object_attached_acquisition_region_v1"
         cfg["refinement"]["acquisition_reference_sha256"] = objective["acquisition_reference_sha256"]
     if objective.get("placement_enabled", False):
-        cfg["refinement"]["method"] = "supported_placement_release_v1"
+        cfg["refinement"]["method"] = "supported_load_transfer_v2"
         cfg["refinement"]["placement_reference_sha256"] = objective["placement_reference_sha256"]
         cfg["refinement"]["placement_support_sha256"] = objective["placement_support_sha256"]
     cfg["curriculum"] = curriculum

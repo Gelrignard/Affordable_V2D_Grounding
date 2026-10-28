@@ -122,13 +122,29 @@ mesh, inertial center of mass and the native support transform. It retains both
 object and hand targets and rejects incompatible windows. The current runtime
 adapter requires one unscaled object and one axis-aligned cylindrical support.
 
-Within the accepted window, a bounded bonus rewards actual object-support load,
-low object velocity and a pose near the placement target. The bonus also favors
-removing hand load after support is established. While the object lacks stable
-support, only the withdrawing hand's tracking cost is softened, to no less than
-20% of its original value. That relief ends with the window; time continues and
-full hand tracking returns. This does not add virtual support forces, freeze
-the motion clock or modify the physics, controller or policy interface.
+Within the accepted window, `supported_load_transfer_v2` separates three pieces
+of progress: transferring weight to the support, settling the object, and
+removing hand force. These add at most 0.20, 0.10 and 0.20 to the raw object
+position term, respectively. The first component does not require an already
+settled object; the release component requires both support load and low motion.
+All palm and finger tracking terms remain at their normal strengths.
+
+The bonus is `W * R * U * (0.20L + 0.10LV + 0.20LVD)`. `W` is the validated
+release window; `R` retains the target-position and support-interior checks.
+`L` measures actual normal support force divided by object weight, saturates at
+one weight, and attenuates overload. `V` decreases with linear and angular
+velocity; `D` decreases with summed hand contact force. `U` gives full credit
+within 15 degrees of the reference support-facing axis and decreases to zero at
+45 degrees. Yaw remains governed by the existing object-orientation objective.
+Unsupported or tipped objects earn no bonus, and a quiet supported object with
+released fingers earns more than one still held by the hand.
+
+The earlier `supported_placement_release_v1` multiplied all readiness factors
+before providing load credit and softened withdrawing-palm tracking. This
+revision removes that relief and records the three bonus components separately.
+It does not add virtual forces, freeze the motion clock, change the reference
+targets, or modify the physics, controller or policy interface. Source commit
+and method identity distinguish these experimental revisions.
 
 The changes remain in the native 13 raw reward terms before n-step aggregation,
 so replay contains the executed shaping. Evaluation records support force and

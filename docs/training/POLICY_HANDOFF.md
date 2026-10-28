@@ -83,6 +83,9 @@ It automatically validates a final supported-release window from the job's
 one native axis-aligned cylindrical support, and stops in CPU preflight if no
 valid window exists. The approach variant and placement variant are mutually
 exclusive. Keep the hashed input sidecars available with the checkpoint.
+This branch identifies the placement objective as `supported_load_transfer_v2`:
+separate support-load, settling and finger-release credit with normal hand
+tracking. The default Tier 1 precision method leaves this objective disabled.
 
 The fixed processing rule is:
 
@@ -92,6 +95,12 @@ The fixed processing rule is:
 4. Evaluate the final checkpoint and the latest saved checkpoints at or before nominal +60M and +40M, allowing one 2,048-transition collection for native save rounding and never going beyond the final checkpoint. Deduplicate to at most three. All evaluations retain every frame and all 16 worlds, start at exact frame zero, use no reset/global object assistance, and never reset a failed world during an attempt.
 5. Select by descending MP-SR, then SP-SR, then ADD-AUC, then ascending MPPE. Ties prefer fewer transitions. This rule uses the input reference only and is saved before evaluation. There is no manual checkpoint choice or parameter sweep.
 6. Export fixed world 0 from the selected checkpoint, verify the official trajectory reader and hashes, and mark the episode complete. A successful world is never chosen after observing outcomes.
+
+The full rollout remains mandatory even when a Tier 1 input contains invisible
+frames. For Tier 1, the exported rows follow the released official visibility
+grid and retain original frame indices and timestamps. The manifest records
+both source and exported frame counts and every officially unscored frame.
+Tier 2/3 input visibility cannot redefine the clean evaluation grid.
 
 Defaults retain 2,048 worlds and batch size 2,048, 5M GPU replay, JAX memory fraction 0.60, a 23,000 MiB device-memory guard, and a three-hour training cap. Earlier experiment commits used 4M replay. Three bounded evaluations are reserved within the 3.25-hour total cap. Every GPU child enforces both wall time and calendar deadline. A host-level lock and GPU-idle checks prevent a second worker from sharing the device accidentally.
 

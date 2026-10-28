@@ -85,6 +85,32 @@ force projection or jointly optimize a trajectory and its forces. These are sepa
 implementation. A successful simulator rollout does not certify a noisy reference
 or an upstream correction as dynamically feasible.
 
+## Optional Tier 2/3 acquisition regions
+
+`--acquisition-guidance grasp-region` changes palm-position guidance during a
+short approach window before a reference contact onset. It constructs an
+object-local palm offset from nearby contact-labelled frames whose fingertips
+are close to the object's surface and whose palm has exterior clearance. A
+bounded region around that offset moves with the simulated object, so the hand
+can approach the object where it actually is without chasing every corrupted
+world-space palm sample. The approach region blends back into the existing
+contact objective at the onset. Orientation, contact reward, held-object
+guidance, release, object rewards and SAC remain unchanged.
+
+The input motion and object mesh provide candidate grasp geometry. Observed
+frame masks, seed consistency and mesh clearance reject unsuitable windows;
+rejected windows retain the original guidance. These checks concern palm and
+fingertip geometry, not whole-hand collision freedom or force feasibility. Real
+grasp stability must still emerge from simulated contact dynamics and the
+resulting SAC transitions. No clean target or successful rollout is used to
+construct the regions. The configuration, source reference and executed region
+table are hashed alongside the checkpoint.
+
+This is an experimental, opt-in Tier 2/3 variant inspired by separating grasp
+acquisition from demonstration tracking. It is not a DexMachina reproduction
+and does not change to PPO. The default precision profile, including Tier 1,
+retains the previous objective and execution path.
+
 ## Method sources and scope
 
 CHORD supplies the reference-tracking formulation and contact-capability ideas;

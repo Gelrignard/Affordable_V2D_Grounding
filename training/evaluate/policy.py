@@ -43,6 +43,17 @@ def write_json(path, value):
     temporary.replace(path)
 
 
+def disable_training_acquisition_reward(config):
+    """Rollouts need the actor and physics, not the training-only region sidecar."""
+    changed = False
+    for location in (config, config.get("env", {})):
+        objective = location.get("objective", {})
+        if objective.get("acquisition_enabled", False):
+            objective["acquisition_enabled"] = False
+            changed = True
+    return changed
+
+
 def first_bad_frame(mask):
     """One first local frame per world; None means no violation, not frame zero."""
     mask = np.asarray(mask, dtype=bool)
@@ -286,6 +297,7 @@ def run(args):
         if harness.checkpoint_training_algorithm(config) != "flash_sac":
             raise ValueError("Policy evaluator expects a native FlashSAC checkpoint")
         original_composition(config, **kwargs)
+        captured["acquisition_reward_disabled"] = disable_training_acquisition_reward(config)
         if "reset_voc_scale" in config["env"]["reset"]:
             config["env"]["reset"]["reset_voc_scale"] = 0.0
         # Custom training dwell/gross-failure logic must not freeze the physical
@@ -367,6 +379,11 @@ def run(args):
         "phase_metrics": phases,
         "diagnostics": captured["trace"].write(out, captured["network"]),
     })
+    if captured["acquisition_reward_disabled"]:
+        data["training_acquisition_objective"] = saved_env["objective"]
+        data["acquisition_evaluation_note"] = (
+            "Training-only acquisition reward disabled during evaluation; no reference sidecar is required. "
+            "Actor, observations, actions, physics and pose metrics are unchanged.")
     write_json(out / "evaluation_environment_config.json", captured["evaluation_environment_config"])
     write_json(out / "evaluation.json", data)
     write_report(out, [leaderboard_row(data, tier=args.tier, episode=args.episode, variant=args.variant,

@@ -9,6 +9,8 @@ Reference contact is a smoothed shaping prior, never a claim of physical contact
 from __future__ import annotations
 
 import functools
+import inspect
+import json
 import math
 from dataclasses import dataclass
 
@@ -127,6 +129,51 @@ def compose_refinement_objective(
 
 
 @wp.kernel
+def apply_acquisition_position(
+    body_q: wp.array(dtype=wp.transform), timestep: wp.array(dtype=wp.int32),
+    reference_wrist_pos: wp.array(dtype=wp.vec3),
+    reference_object_pos: wp.array(dtype=wp.vec3), reference_object_quat: wp.array(dtype=wp.quat),
+    wrist_body_ids: wp.array(dtype=wp.int32), wrist_local_pos: wp.array(dtype=wp.vec3),
+    contact_blend: wp.array(dtype=wp.float32), centers_o: wp.array(dtype=wp.vec3),
+    radii: wp.array(dtype=wp.float32), acquisition_blend: wp.array(dtype=wp.float32),
+    weights: wp.array(dtype=wp.float32), num_frames: int, bodies_per_world: int,
+    object_body_id: int, use_relative: int, position_tolerance: float,
+    world_position_std: float, relative_position_std: float, frame_dt: float,
+    terms: wp.array(dtype=wp.float32), score: wp.array(dtype=wp.float32),
+) -> None:
+    world = wp.tid()
+    frame = wp.clamp(timestep[world], 0, num_frames - 1)
+    if acquisition_blend[frame * 2] > 0.0 or acquisition_blend[frame * 2 + 1] > 0.0:
+        body_base = world * bodies_per_world
+        object_inv = wp.transform_inverse(body_q[body_base + object_body_id])
+        ref_inv = wp.transform_inverse(wp.transform(reference_object_pos[frame],
+                                                   wp.normalize(reference_object_quat[frame])))
+        cost = float(0.0)
+        for hand in range(2):
+            i = frame * 2 + hand
+            palm = wp.transform_point(body_q[body_base + wrist_body_ids[hand]], wrist_local_pos[hand])
+            relative = wp.transform_point(object_inv, palm)
+            ref_relative = wp.transform_point(ref_inv, reference_wrist_pos[i])
+            world_distance = wp.max(wp.length(palm - reference_wrist_pos[i]) - position_tolerance, 0.0)
+            relative_distance = wp.max(wp.length(relative - ref_relative) - position_tolerance, 0.0)
+            blend = float(0.0)
+            if use_relative != 0:
+                blend = contact_blend[i]
+            existing_cost = ((1.0 - blend) * world_distance * world_distance / (world_position_std * world_position_std)
+                             + blend * relative_distance * relative_distance / (relative_position_std * relative_position_std))
+            region_distance = wp.max(wp.length(relative - centers_o[i]) - radii[i], 0.0)
+            region_cost = region_distance * region_distance / (relative_position_std * relative_position_std)
+            alpha = acquisition_blend[i]
+            cost += (1.0 - alpha) * existing_cost + alpha * region_cost
+        base = world * 13
+        terms[base + 9] = wp.exp(-cost)
+        total = float(0.0)
+        for term in range(13):
+            total += weights[term] * terms[base + term]
+        score[world] = total * frame_dt
+
+
+@wp.kernel
 def reset_refinement_counters(
     reset_mask: wp.array(dtype=wp.int32),
     palm_count: wp.array(dtype=wp.int32),
@@ -233,6 +280,15 @@ class RefinementObjectiveConfig(_NativeObjectiveConfig):
     hand_orientation_std: float = 0.8
     hand_orientation_factor: float = 0.25
     use_object_relative_hands: bool = True
+    acquisition_enabled: bool = False
+    acquisition_reference_path: str | None = None
+    acquisition_reference_sha256: str | None = None
+    acquisition_window_frames: int = 25
+    acquisition_seed_frames: int = 5
+    acquisition_region_radius: float = 0.03
+    acquisition_contact_distance: float = 0.03
+    acquisition_min_palm_clearance: float = 0.015
+    acquisition_max_seed_spread: float = 0.04
 
     def __post_init__(self):
         _require_runtime()
@@ -252,13 +308,34 @@ class RefinementObjectiveConfig(_NativeObjectiveConfig):
             raise ValueError("invalid hand tolerance or orientation factor")
         if int(self.contact_blend_frames) != self.contact_blend_frames or self.contact_blend_frames < 0:
             raise ValueError("contact_blend_frames must be a non-negative integer")
+        if self.acquisition_enabled:
+            if not self.acquisition_reference_path or not self.acquisition_reference_sha256:
+                raise ValueError("enabled acquisition requires portable reference path and SHA256")
+            if (len(self.acquisition_reference_sha256) != 64
+                    or any(c not in "0123456789abcdef" for c in self.acquisition_reference_sha256)):
+                raise ValueError("invalid acquisition reference SHA256")
+            if (type(self.acquisition_window_frames) is not int or self.acquisition_window_frames < 4
+                    or type(self.acquisition_seed_frames) is not int or self.acquisition_seed_frames < 3):
+                raise ValueError("invalid acquisition window/seed frame counts")
+            if not all(math.isfinite(v) and v > 0 for v in (
+                self.acquisition_region_radius, self.acquisition_contact_distance,
+                self.acquisition_min_palm_clearance, self.acquisition_max_seed_spread,
+            )):
+                raise ValueError("acquisition geometry tolerances must be positive and finite")
 
     def build(self, *args, **kwargs):
-        return RefinementObjective(super().build(*args, **kwargs), self)
+        table = None
+        if self.acquisition_enabled:
+            from training.core.acquisition import table_from_native
+            bound = inspect.signature(_NativeObjectiveConfig.build).bind(self, *args, **kwargs)
+            table = table_from_native(bound.arguments["reference"], bound.arguments["robot_reference"], self)
+            if table.audit["active_windows"] == 0:
+                raise ValueError("acquisition has no valid windows: " + json.dumps(table.audit, sort_keys=True))
+        return RefinementObjective(super().build(*args, **kwargs), self, acquisition_table=table)
 
 
 class RefinementObjective:
-    def __init__(self, native, config):
+    def __init__(self, native, config, acquisition_table=None):
         self.native = native
         self.config = config
         self._term_names = native.term_names + ("object_orientation",)
@@ -268,6 +345,19 @@ class RefinementObjective:
         self._score = wp.zeros(native.world_count, dtype=wp.float32, device=device)
         labels = native.contact_active.numpy().reshape(native.num_frames, 2)
         self.contact_blend = wp.array(smooth_contact_blend(labels, config.contact_blend_frames).reshape(-1), dtype=wp.float32, device=device)
+        self.acquisition_audit = None
+        self._acquisition_arrays = None
+        if getattr(config, "acquisition_enabled", False):
+            if acquisition_table is None or acquisition_table.audit["active_windows"] == 0:
+                raise ValueError("enabled acquisition requires at least one validated window")
+            if not np.allclose(native.command.object_scales.numpy(), 1.0, atol=1e-6, rtol=0):
+                raise ValueError("acquisition currently requires unscaled object geometry")
+            self.acquisition_audit = acquisition_table.audit
+            self._acquisition_arrays = (
+                wp.array(acquisition_table.centers_o.reshape(-1, 3), dtype=wp.vec3, device=device),
+                wp.array(acquisition_table.radii.reshape(-1), dtype=wp.float32, device=device),
+                wp.array(acquisition_table.blend.reshape(-1), dtype=wp.float32, device=device),
+            )
 
     # Runtime protocols on Python 3.12 use inspect.getattr_static: delegated
     # __getattr__ attributes are invisible. Keep every protocol member explicit.
@@ -316,6 +406,15 @@ class RefinementObjective:
             c.hand_orientation_std, c.hand_orientation_factor, c.object_orientation_std,
             c.object_position_fine_fraction, c.object_position_fine_std, n.frame_dt,
         ], outputs=[self.terms, self.score], device=n.terms.device)
+        if self._acquisition_arrays is not None:
+            wp.launch(apply_acquisition_position, dim=n.world_count, inputs=[
+                state.body_q, timestep, n.reference.wrist_pos_w,
+                n.command.reference.body_pos_w, n.command.reference.body_quat_w,
+                n.wrist_frames.body_ids, n.wrist_frames.body_to_frame_pos,
+                self.contact_blend, *self._acquisition_arrays, self.weights, n.num_frames,
+                n.bodies_per_world, n.object_body_id, int(c.use_object_relative_hands),
+                c.hand_position_tolerance, c.palm_position_std, c.relative_hand_position_std, n.frame_dt,
+            ], outputs=[self.terms, self.score], device=n.terms.device)
 
 
 @dataclass(frozen=True)

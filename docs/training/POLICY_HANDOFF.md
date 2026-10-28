@@ -67,6 +67,15 @@ Set `DEADLINE_UTC` to the actual future ISO8601 UTC deadline for your run before
 
 Omitting both export arguments produces selected policies and evaluation evidence only. Supplying both includes the official-format trajectory export in successful completion.
 
+For the experimental Tier 2/3 approach objective, add
+`--acquisition-guidance grasp-region` to the pipeline or batch command. The same
+flag is fixed for the entire run and recorded in its immutable request. CPU
+preflight validates the input-derived acquisition regions before training;
+at least one valid region is required. Region construction and checkpoint
+selection are automatic. Use the default `precision` profile for Tier 1.
+See [the method description](POLICY_METHOD.md#optional-tier-23-acquisition-regions)
+for the exact scope of this change.
+
 The fixed processing rule is:
 
 1. Verify committed source, pinned runtime, joint/asset/input hashes, frame count and export inputs; save immutable effective configuration.

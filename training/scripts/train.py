@@ -65,6 +65,8 @@ def source_config(args, output):
     """Resolve a fresh native configuration or the existing exact warm-start path."""
     fresh = getattr(args, "fresh_config", None)
     if fresh:
+        if getattr(args, "acquisition_guidance", None) == "grasp-region":
+            raise ValueError("Acquisition-region guidance applies only to refinement")
         if args.phase != "refine":
             raise ValueError("Fresh native bootstrap cannot start a consolidation phase")
         saved = json.loads(Path(fresh).read_text(encoding="utf-8"))
@@ -78,7 +80,9 @@ def source_config(args, output):
     start = int(metadata["environment_steps"])
     end, additional = transition_budget(start, args.additional_transitions)
     cfg = build_config(saved, state=state, output=output, start=start, end=end,
-                       phase=args.phase, checkpoint_interval=args.checkpoint_interval)
+                       phase=args.phase, checkpoint_interval=args.checkpoint_interval,
+                       acquisition_guidance=getattr(args, "acquisition_guidance", None),
+                       acquisition_reference=getattr(args, "acquisition_reference", None))
     return cfg, saved, state, policy, start, end, additional
 
 
@@ -311,6 +315,10 @@ def run_child(args):
 
     def recorded_run(env, config, **kwargs):
         context.update(env=env, config=config, kwargs=kwargs)
+        audit = getattr(env.env.objective, "acquisition_audit", None)
+        if audit is not None:
+            write_json(output / "acquisition_guidance.json", audit)
+            kwargs["checkpoint_metadata"]["acquisition_table_sha256"] = audit["table_sha256"]
         memory_snapshot("scene_ready")
         return original_run(env, config, **kwargs)
 
@@ -512,6 +520,9 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--job")
     parser.add_argument("--phase", choices=("refine", "consolidate"), default="refine")
+    parser.add_argument("--acquisition-guidance", choices=("precision", "grasp-region"),
+                        help="Refinement objective; omitted continuations retain the saved setting")
+    parser.add_argument("--acquisition-reference", help="The same portable input job's reference.npz")
     parser.add_argument("--additional-transitions", type=int, default=60_000_000)
     parser.add_argument("--max-seconds", type=int, default=1800)
     parser.add_argument("--deadline-utc", required=True)

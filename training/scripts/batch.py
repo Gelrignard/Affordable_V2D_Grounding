@@ -62,6 +62,9 @@ def make_plan(args):
     selected = [job for index, job in enumerate(jobs) if index % args.shard_count == args.shard_index]
     if args.max_jobs is not None:
         selected = selected[:args.max_jobs]
+    guidance = getattr(args, "acquisition_guidance", "precision")
+    if guidance == "grasp-region" and any(job["tier"] == 1 for job in selected):
+        raise ValueError("Use a separate Tier 2/3 shard for grasp-region guidance")
     root = Path(args.output).resolve()
     for job in selected:
         job["output"] = str(root / f"tier{job['tier']}" / f"episode_{job['episode_index']:06d}")
@@ -70,7 +73,7 @@ def make_plan(args):
             if not dataset.is_dir():
                 raise ValueError(f"Released input tier directory missing: {dataset}")
             job["dataset_input"] = str(dataset)
-    return {"schema": "v2d_policy_batch_v1", "jobs_root": str(Path(args.jobs).resolve()),
+    plan = {"schema": "v2d_policy_batch_v1", "jobs_root": str(Path(args.jobs).resolve()),
             "runtime": str(Path(args.runtime).resolve()), "output": str(root),
             "deadline_utc": args.deadline_utc, "gpu_hours": args.gpu_hours,
             "training_budget_seconds": args.training_budget_seconds,
@@ -78,6 +81,9 @@ def make_plan(args):
             "submission_kit": str(Path(args.submission_kit).resolve()) if args.submission_kit else None,
             "shard_index": args.shard_index, "shard_count": args.shard_count,
             "selection": "sorted(tier, episode), then index modulo shard_count", "jobs": selected}
+    if guidance != "precision":
+        plan["acquisition_guidance"] = guidance
+    return plan
 
 
 def charged_seconds(root):
@@ -101,6 +107,8 @@ def episode_command(plan, job, deadline):
                "--deadline-utc", deadline]
     if plan["submission_kit"]:
         command.extend(["--dataset-input", job["dataset_input"], "--submission-kit", plan["submission_kit"]])
+    if plan.get("acquisition_guidance", "precision") != "precision":
+        command.extend(["--acquisition-guidance", plan["acquisition_guidance"]])
     return command
 
 
@@ -192,6 +200,8 @@ def parser():
     p.add_argument("--require-complete", action="store_true", help="Require all requested identities before any GPU work")
     p.add_argument("--dataset-root", help="Released input dataset containing tier1/, tier2/, tier3/")
     p.add_argument("--submission-kit")
+    p.add_argument("--acquisition-guidance", choices=("precision", "grasp-region"), default="precision",
+                   help="Opt-in acquisition guidance for Tier 2/3 shards")
     p.add_argument("--dry-run", action="store_true", help="Print the complete deterministic roster without writing or training")
     return p
 

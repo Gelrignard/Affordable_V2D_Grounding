@@ -1,6 +1,7 @@
 """Native acquisition and precision-refinement configuration contracts."""
 import bisect
 import copy
+import hashlib
 import json
 from pathlib import Path
 
@@ -59,9 +60,12 @@ def refinement_curriculum(objective, start, end, phase, ramp_transitions=10_000_
             "thresholds": thresholds, "stages": stages}
 
 
-def build_config(saved, *, state, output, start, end, phase, checkpoint_interval):
+def build_config(saved, *, state, output, start, end, phase, checkpoint_interval,
+                 acquisition_guidance=None, acquisition_reference=None):
     """Preserve saved network, observation, action, source and simulator contracts."""
     cfg = normalize_checkpoint_config(saved)
+    if acquisition_guidance not in (None, "precision", "grasp-region"):
+        raise ValueError("Unknown acquisition guidance method")
     if int(cfg["scene"]["world_count"]) != WORLDS:
         raise ValueError("Native compact warm start requires a 2048-world source checkpoint")
     objective = copy.deepcopy(cfg["env"]["objective"])
@@ -75,6 +79,21 @@ def build_config(saved, *, state, output, start, end, phase, checkpoint_interval
                       "use_object_relative_hands": True})
     objective["object_position_weight"] = 1.0 if phase == "refine" else 3.0
     objective["force_closure_weight"] = 5.0 if phase == "refine" else 1.0
+    if acquisition_guidance == "grasp-region":
+        objective["acquisition_enabled"] = True
+    elif acquisition_guidance == "precision" and "acquisition_enabled" in objective:
+        objective["acquisition_enabled"] = False
+    if objective.get("acquisition_enabled", False):
+        reference = acquisition_reference or objective.get("acquisition_reference_path")
+        if not reference or not Path(reference).is_file():
+            raise ValueError("Grasp-region guidance requires its input reference.npz")
+        with Path(reference).open("rb") as stream:
+            reference_sha = hashlib.file_digest(stream, "sha256").hexdigest()
+        prior_sha = objective.get("acquisition_reference_sha256")
+        if prior_sha and prior_sha != reference_sha:
+            raise ValueError("Acquisition reference changed since the saved checkpoint")
+        objective.update(acquisition_reference_path=str(Path(reference).resolve()),
+                         acquisition_reference_sha256=reference_sha)
     termination = copy.deepcopy(cfg["env"]["termination"])
     termination.update({"_target_": "training.core.refinement.RefinementTerminationConfig",
                         "palm_position_threshold": 0.25, "palm_orientation_threshold": 2.2,
@@ -116,6 +135,9 @@ def build_config(saved, *, state, output, start, end, phase, checkpoint_interval
                         "fresh_replay": True, "optimizer_horizon": OPTIMIZER_HORIZON,
                         "replay_capacity": REPLAY_CAPACITY, "replay_backend": "gpu",
                         "recovery_reset_assistance": phase == "refine"}
+    if objective.get("acquisition_enabled", False):
+        cfg["refinement"]["method"] = "object_attached_acquisition_region_v1"
+        cfg["refinement"]["acquisition_reference_sha256"] = objective["acquisition_reference_sha256"]
     cfg["curriculum"] = curriculum
     training = cfg["training"]
     training.update(world_count=WORLDS, total_environment_steps=end, resume=True,

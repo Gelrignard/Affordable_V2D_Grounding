@@ -230,6 +230,8 @@ def prepare(request):
     from flash_chord.training.flash_sac.config import TrainingConfig
     from omegaconf import OmegaConf
     job = job_identity(request["job"])
+    if request.get("acquisition_guidance", "precision") == "grasp-region" and job["manifest"]["tier"] == 1:
+        raise ValueError("Grasp-region guidance is for Tier 2/3; Tier 1 uses precision")
     rows = pq.ParquetFile(Path(job["job"]) / "motion.parquet").read().to_pylist()
     if len(rows) != 1:
         raise ValueError("Expected exactly one motion row")
@@ -274,6 +276,22 @@ def prepare(request):
               "runtime_support": str(destination) if destination else None,
               "runtime_support_sha256": sha(destination) if destination else None,
               "export_inputs": export_inputs}
+    if request.get("acquisition_guidance") == "grasp-region":
+        from training.core.acquisition import preflight_acquisition_config
+        start = parent["environment_steps"] if parent else BOOTSTRAP_STEPS
+        preview = build_config(parent["resolved_config"] if parent else cfg,
+                               state=Path(parent["state"]) if parent else prepared / "future_state.safetensors",
+                               output=output / "refinement", start=start, end=start + REFINEMENT_STEPS,
+                               phase="refine", checkpoint_interval=CHECKPOINT_INTERVAL,
+                               acquisition_guidance="grasp-region",
+                               acquisition_reference=Path(job["job"]) / "reference.npz")
+        preview_path = prepared / "acquisition_config.json"
+        audit_path = prepared / "acquisition_guidance.json"
+        immutable_json(preview_path, preview)
+        immutable_json(audit_path, preflight_acquisition_config(preview))
+        record["acquisition_preflight"] = {
+            "config": str(preview_path), "config_sha256": sha(preview_path),
+            "audit": str(audit_path), "audit_sha256": sha(audit_path)}
     immutable_json(output / "preparation.json", record)
 
 
@@ -381,6 +399,13 @@ def reverify(request, preparation):
             raise ValueError("Prepared configuration/motion changed")
     if preparation.get("runtime_support") and sha(preparation["runtime_support"]) != preparation["runtime_support_sha256"]:
         raise ValueError("Prepared support geometry changed")
+    acquisition = preparation.get("acquisition_preflight")
+    if request.get("acquisition_guidance") == "grasp-region" and not acquisition:
+        raise ValueError("Acquisition regions were not verified before training")
+    if acquisition:
+        for key in ("config", "audit"):
+            if sha(acquisition[key]) != acquisition[key + "_sha256"]:
+                raise ValueError("Acquisition preflight changed")
     export_inputs = preparation.get("export_inputs")
     if request["dataset_input"] and not export_inputs:
         raise ValueError("Export inputs were not verified before training")
@@ -422,6 +447,10 @@ def train_stage(request, preparation, candidate, stage, config, *, parent=None):
                    str(config["training"]["total_environment_steps"] - start), "--max-seconds", str(child),
                    "--deadline-utc", request["deadline_utc"], "--checkpoint-interval",
                    str(50_000_000 if parent is None else CHECKPOINT_INTERVAL)]
+        if parent is not None:
+            command.extend(["--acquisition-guidance", request.get("acquisition_guidance", "precision")])
+            if request.get("acquisition_guidance") == "grasp-region":
+                command.extend(["--acquisition-reference", str(Path(request["job"]) / "reference.npz")])
         immutable_json(output / (stage + "_manifest.json"), {"source": request["source"], "job": preparation["job"],
                        "planned_config_sha256": sha(planned), "parent": parent, "child_seconds": child, "outer_seconds": outer})
         run_guard(request, candidate, stage, "training", outer, command)
@@ -590,11 +619,13 @@ def run(args):
                    "selection_rule": SELECTION_RULE, "refinement_transition_cap": REFINEMENT_STEPS,
                    "candidate_subset": "final, latest<=60M additional, latest<=40M additional; deduplicated",
                    "candidate_boundary_tolerance_transitions": WORLDS}
+            if getattr(args, "acquisition_guidance", "precision") != "precision":
+                request["acquisition_guidance"] = args.acquisition_guidance
             policy = guard.make_budget_policy(args.total_budget_seconds, args.training_budget_seconds, 1)
             immutable_json(output / "request.json", request)
             stage = "prepare"
             if not (output / "preparation.json").exists():
-                env = {**os.environ, "CUDA_VISIBLE_DEVICES": "", "JAX_PLATFORMS": "cpu"}
+                env = {**os.environ, "CUDA_VISIBLE_DEVICES": "", "JAX_PLATFORMS": "cpu", "WP_DEVICE": "cpu"}
                 subprocess.run([sys.executable, "-m", "training.scripts.pipeline", "--_prepare-request", str(output / "request.json")],
                                cwd=ROOT, env=env, check=True)
             preparation = guard.read_json(output / "preparation.json")
@@ -637,7 +668,9 @@ def run(args):
                 start = parent["environment_steps"]
                 end, _ = transition_budget(start, REFINEMENT_STEPS)
                 config = build_config(json.loads(metadata["resolved_config_json"]), state=Path(parent["state"]),
-                                      output=output / stage, start=start, end=end, phase="refine", checkpoint_interval=CHECKPOINT_INTERVAL)
+                                      output=output / stage, start=start, end=end, phase="refine", checkpoint_interval=CHECKPOINT_INTERVAL,
+                                      acquisition_guidance=request.get("acquisition_guidance", "precision"),
+                                      acquisition_reference=str(Path(request["job"]) / "reference.npz"))
                 final = train_stage(request, preparation, candidate, stage, config, parent=parent)
                 stage = "checkpoint_selection"
                 write_progress(output, stage)
@@ -675,6 +708,8 @@ def main(argv=None):
     parser.add_argument("--runtime")
     parser.add_argument("--output")
     parser.add_argument("--parent-state")
+    parser.add_argument("--acquisition-guidance", choices=("precision", "grasp-region"), default="precision",
+                        help="Opt-in object-attached acquisition regions for Tier 2/3")
     parser.add_argument("--training-budget-seconds", type=float, default=DEFAULTS["training_budget_seconds"])
     parser.add_argument("--total-budget-seconds", type=float, default=DEFAULTS["total_budget_seconds"])
     parser.add_argument("--deadline-utc")

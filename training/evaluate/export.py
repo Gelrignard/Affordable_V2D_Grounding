@@ -208,6 +208,19 @@ def input_frame_conversion(kit, achieved, reference, released, stored_transform)
         "achieved_alignment": False, "clean_reference_used": False}
 
 
+def export_frame_grid(data):
+    """Tier1's own released visibility is its official scoring grid.
+
+    The full source rollout remains mandatory. Tier2/3 input visibility cannot
+    redefine the clean scoring grid, so those inputs still require every frame.
+    """
+    frames = np.asarray(data.reference.frame_index if data.tier == 1 else data.frames, dtype=np.int64)
+    if (frames.ndim != 1 or not len(frames) or np.any(np.diff(frames) <= 0)
+            or not np.isin(frames, data.frames).all()):
+        raise ValueError("Released export frame grid is empty or malformed")
+    return frames
+
+
 def validate_export_inputs(job, dataset_input, episode, kit_root):
     """CPU preflight with absolute-path hashes; creates no files or artifacts.
 
@@ -231,8 +244,9 @@ def validate_export_inputs(job, dataset_input, episode, kit_root):
         raise ValueError("Portable motion object/frame shape differs from released input")
     reference = np.concatenate((position, quaternion[..., [1, 2, 3, 0]]), axis=-1)
     transform, job_provenance = verify_job(job, episode, data, reference)
-    released = kit.packer.input_frame_reference(data.root, episode, data.frames, 1, data.reference.object_names)
-    _, _, conversion = input_frame_conversion(kit, reference[:, 0], reference[:, 0], released, transform)
+    frames = export_frame_grid(data)
+    released = kit.packer.input_frame_reference(data.root, episode, frames, 1, data.reference.object_names)
+    _, _, conversion = input_frame_conversion(kit, reference[frames, 0], reference[frames, 0], released, transform)
     paths = [job / "job.json", *(job / name for name in job_provenance["file_sha256"]),
              kit_root / "KIT_MANIFEST.json", *(kit_root / name for name in validation.PINNED_CODE),
              kit_root / SUBMISSION_READER, Path(__file__), Path(validation.__file__)]
@@ -241,19 +255,25 @@ def validate_export_inputs(job, dataset_input, episode, kit_root):
     return {"schema": "v2d_policy_export_preflight_v1", "state": "verified",
             "tier": data.tier, "episode": episode, "sequence_id": data.sequence,
             "frame_count": len(data.frames), "clean_reference_used": False,
+            "exported_frame_count": len(frames), "exported_source_frame_indices": frames.tolist(),
+            "officially_unscored_source_frames": np.setdiff1d(data.frames, frames).tolist(),
             "portable_job": job_provenance, "released_input": data.provenance,
             "conversion": conversion, "official_code": {**kit.provenance,
                 "submission_reader_sha256": SUBMISSION_READER_SHA256},
             "file_sha256": {str(path.resolve()): validation.sha256(path) for path in paths}}
 
 
-def write_parquet(path, achieved, reference, *, episode, object_name, fps, provenance, metadata):
+def write_parquet(path, achieved, reference, *, episode, object_name, fps, provenance, metadata,
+                  frame_indices=None, source_frame_count=None):
     """Native v1 object-trajectory columns; no robot columns are required by the kit."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
     steps = len(achieved)
-    frame = np.arange(steps, dtype=np.int32)
+    frame = (np.arange(steps, dtype=np.int32) if frame_indices is None
+             else np.asarray(frame_indices, dtype=np.int32))
+    if frame.shape != (steps,) or np.any(frame < 0) or np.any(np.diff(frame) <= 0):
+        raise ValueError("Export frame indices must preserve the ordered source grid")
     values = {"environment_id": np.zeros(steps, dtype=np.int32), "step": frame,
               "reference_frame": frame, "time_s": frame.astype(np.float64) / fps,
               "object_id": np.zeros(steps, dtype=np.int32), "object_body_id": np.zeros(steps, dtype=np.int32),
@@ -266,7 +286,7 @@ def write_parquet(path, achieved, reference, *, episode, object_name, fps, prove
     native = {"schema": "flash_chord_object_trajectories_v1", "episode_index": str(episode),
               "position_unit": "meter", "quaternion_order": "xyzw",
               "row_order": "step,environment_id,object_body_id", "control_fps": str(fps),
-              "start_frame": "0", "step_count": str(steps), "world_count": "1",
+              "start_frame": "0", "step_count": str(steps if source_frame_count is None else source_frame_count), "world_count": "1",
               "object_body_count": "1", "pose_width": "7", **provenance}
     encoded = {f"flash_chord.{key}".encode(): str(value).encode() for key, value in native.items()}
     encoded.update({f"v2d_export.{key}".encode(): str(value).encode() for key, value in metadata.items()})
@@ -275,9 +295,10 @@ def write_parquet(path, achieved, reference, *, episode, object_name, fps, prove
     pq.write_table(table, path, compression="zstd", use_dictionary=True)
 
 
-def validate_export(path, reader, kit, released, *, episode, expected_achieved, expected_reference, provenance):
+def validate_export(path, reader, kit, released, *, episode, expected_achieved, expected_reference, provenance,
+                    frame_indices=None):
     trajectory = reader.read_trajectory(path)
-    frames = np.arange(len(released))
+    frames = np.arange(len(released)) if frame_indices is None else np.asarray(frame_indices)
     if (trajectory.episode_index != episode or not np.array_equal(trajectory.frame_index, frames)
             or not np.all(trajectory.world_index == 0) or not np.all(trajectory.object_slot == 0)
             or not np.all(trajectory.object_id == 0) or not trajectory.world_valid.all()
@@ -320,12 +341,14 @@ def export_rollout(*, arrays, job, dataset_input, episode, kit_root, output_dir,
         checkpoint_provenance = validation.identity(checkpoint)
         if checkpoint_provenance["sha256"] != provenance["checkpoint_sha256"]:
             raise ValueError("Supplied policy checkpoint hash does not match the evaluated policy")
-    # Every source frame is required. Invisible/missing input poses fail closed;
-    # this helper never fills or discards a trajectory frame during export.
-    released = kit.packer.input_frame_reference(input_data.root, episode, input_data.frames, 1,
+    # The complete source cohort was authenticated above. Only Tier1's released
+    # invisible frames may be absent from the official artifact; no outcome or
+    # world selection affects this grid and no missing pose is manufactured.
+    frames = export_frame_grid(input_data)
+    released = kit.packer.input_frame_reference(input_data.root, episode, frames, 1,
                                                 input_data.reference.object_names)
     exported, exported_reference, conversion = input_frame_conversion(
-        kit, achieved[:, 0, 0], reference[:, 0], released, transform)
+        kit, achieved[frames, 0, 0], reference[frames, 0], released, transform)
     input_identities = {"arrays": validation.identity(arrays), "evaluation": validation.identity(sidecar),
                         "native_trajectory": validation.identity(native_path), "portable_job": job_provenance,
                         "released_input": input_data.provenance, "policy_checkpoint": checkpoint_provenance}
@@ -336,6 +359,7 @@ def export_rollout(*, arrays, job, dataset_input, episode, kit_root, output_dir,
     artifact = output_dir / f"episode_{episode:06d}.parquet"
     try:
         write_parquet(temporary, exported, exported_reference, episode=episode,
+                      frame_indices=frames, source_frame_count=len(input_data.frames),
                       object_name=input_data.reference.object_names[0], fps=float(evaluation["sim_control_fps"]),
                       provenance={**provenance, "reference_parquet": str(input_data.path)},
                       metadata={"coordinate_frame": "released_track2_world", "input_tier": input_data.tier,
@@ -346,14 +370,16 @@ def export_rollout(*, arrays, job, dataset_input, episode, kit_root, output_dir,
                                 "validation_helper_sha256": helper_hashes["score_clean_reference.py"]})
         checks = validate_export(temporary, reader, kit, released, episode=episode,
                                  expected_achieved=exported, expected_reference=exported_reference,
-                                 provenance=provenance)
+                                 provenance=provenance, frame_indices=frames)
         temporary.rename(artifact)
         manifest = {"schema": "v2d_policy_rollout_export_v1", "state": "complete",
                     "created_utc": datetime.now(timezone.utc).isoformat(), "episode": episode,
                     "tier": input_data.tier, "sequence_id": input_data.sequence,
                     "source_world_count": achieved.shape[1], "exported_world_count": 1,
                     "source_world_id": 0, "world_selection": "fixed_world_zero_no_metric_selection",
-                    "frame_count": len(released), "source_frame_indices": input_data.frames.tolist(),
+                    "frame_count": len(released), "source_frame_count": len(input_data.frames),
+                    "source_frame_indices": frames.tolist(),
+                    "officially_unscored_source_frames": np.setdiff1d(input_data.frames, frames).tolist(),
                     "dropped_frames": [], "clean_reference_used": False, "achieved_alignment": False,
                     "artifact": {"filename": artifact.name, "sha256": validation.sha256(artifact),
                                  "bytes": artifact.stat().st_size}, "recorded_evaluator_provenance": provenance,
@@ -448,7 +474,23 @@ def collect_exports(records, output_root, kit_root, expected_by_tier=None):
                 or (manifest_path.parent / manifest["artifact"]["filename"]).resolve() != artifact):
             raise ValueError("Export manifest violates collection identity/selection/fixed-world contract")
         trajectory = reader.read_trajectory(artifact)
-        frames = np.arange(manifest["frame_count"])
+        frames = np.asarray(manifest["source_frame_indices"], dtype=np.int64)
+        source_frames = np.arange(manifest.get("source_frame_count", manifest["frame_count"]))
+        omitted = manifest.get("officially_unscored_source_frames", [])
+        if (len(frames) != manifest["frame_count"] or not len(frames) or np.any(np.diff(frames) <= 0)
+                or not np.isin(frames, source_frames).all()
+                or np.setdiff1d(source_frames, frames).tolist() != omitted):
+            raise ValueError("Collected export has an invalid source/visibility frame grid")
+        if omitted:
+            if tier != 1:
+                raise ValueError("Only Tier1 released visibility may omit source frames")
+            released = manifest["inputs"]["released_input"]
+            for key in ("parquet", "download_manifest"):
+                if validation.sha256(released[key]["path"]) != released[key]["sha256"]:
+                    raise ValueError("Released Tier1 visibility provenance changed")
+            data = read_input_reference(Path(released["download_manifest"]["path"]).parent, episode, kit)
+            if not np.array_equal(export_frame_grid(data), frames) or not np.array_equal(data.frames, source_frames):
+                raise ValueError("Export omissions differ from released Tier1 visibility")
         provenance = reader.provenance(trajectory)
         if (trajectory.episode_index != episode or not np.array_equal(trajectory.frame_index, frames)
                 or manifest.get("source_frame_indices") != frames.tolist()

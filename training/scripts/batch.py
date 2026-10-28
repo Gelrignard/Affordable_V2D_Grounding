@@ -28,29 +28,47 @@ def write_json(path, value):
 
 
 def discover_jobs(root, tiers=(1, 2, 3), episodes=None):
-    """Order by task identity, independent of traversal/filename ordering."""
+    """Prefer corrected, otherwise original; order by task identity."""
+    from training.core.input_selection import input_selection_record
+
     found = {}
     for path in sorted(Path(root).resolve().rglob("job.json")):
         data = json.loads(path.read_text(encoding="utf-8"))
-        if data.get("schema") != "v2d_policy_job_v1" or data.get("variant") != "corrected":
+        if data.get("schema") != "v2d_policy_job_v1":
+            if data.get("variant") in ("corrected", "original") or path.parent.name in ("corrected", "original"):
+                raise ValueError(f"Unsupported portable job schema: {path}")
             continue
+        if data.get("variant") not in ("corrected", "original"):
+            raise ValueError(f"Unsupported portable job variant: {path}")
         tier, episode = data.get("tier"), data.get("episode_index")
         if type(tier) is not int or tier not in (1, 2, 3) or type(episode) is not int or not 0 <= episode < 30:
             raise ValueError(f"Invalid portable job identity: {path}")
         if tier not in tiers or (episodes is not None and episode not in episodes):
             continue
         identity = (tier, episode)
-        if identity in found:
-            raise ValueError(f"Duplicate portable job for tier{tier}/episode{episode}: {path}")
-        found[identity] = {"tier": tier, "episode_index": episode, "job": str(path.parent),
-                           "job_sha256": digest(path)}
-    return [found[key] for key in sorted(found)]
+        variants = found.setdefault(identity, {})
+        if data["variant"] in variants:
+            raise ValueError(f"Duplicate portable {data['variant']} job for tier{tier}/episode{episode}: {path}")
+        variants[data["variant"]] = path.parent
+    result = []
+    for (tier, episode), variants in sorted(found.items()):
+        variant = "corrected" if "corrected" in variants else "original"
+        record = input_selection_record(variants[variant])
+        job = {"tier": tier, "episode_index": episode, "job": record["job"],
+               "job_sha256": record["job_sha256"]}
+        # Keep the legacy corrected-only plan byte structure for safe resumes.
+        # Original fallback is new and is explicitly bound into its batch plan.
+        if variant == "original":
+            record["selection_reason"] = "corrected_unavailable_using_original"
+            job["input_selection"] = record
+        result.append(job)
+    return result
 
 
 def make_plan(args):
     jobs = discover_jobs(args.jobs, args.tiers, args.episodes)
     if not jobs:
-        raise ValueError("No matching corrected portable jobs")
+        raise ValueError("No matching corrected or original portable jobs")
     if not 0 <= args.shard_index < args.shard_count:
         raise ValueError("Require 0 <= shard-index < shard-count")
     if args.require_complete:
@@ -88,6 +106,18 @@ def make_plan(args):
         plan["acquisition_guidance"] = guidance
     if placement != "off":
         plan["placement_guidance"] = placement
+    recipe = getattr(args, "recipe", "legacy")
+    selection_policy = getattr(args, "selection_policy", "success")
+    if recipe != "legacy" and guidance != "precision":
+        raise ValueError("Named recipes require precision acquisition")
+    if recipe == "tier1-precision" and any(job["tier"] != 1 for job in selected):
+        raise ValueError("tier1-precision requires a Tier 1 shard")
+    if recipe == "tier23-load-transfer" and any(job["tier"] == 1 for job in selected):
+        raise ValueError("tier23-load-transfer requires a Tier 2/3 shard")
+    if recipe != "legacy":
+        plan["recipe"] = recipe
+    if selection_policy != "success":
+        plan["selection_policy"] = selection_policy
     return plan
 
 
@@ -116,6 +146,16 @@ def episode_command(plan, job, deadline):
         command.extend(["--acquisition-guidance", plan["acquisition_guidance"]])
     if plan.get("placement_guidance", "off") != "off":
         command.extend(["--placement-guidance", plan["placement_guidance"]])
+    recipe = plan.get("recipe", "legacy")
+    if recipe == "auto":
+        recipe = "tier1-precision" if job["tier"] == 1 else "tier23-load-transfer"
+    if recipe != "legacy":
+        command.extend(["--recipe", recipe])
+    selection_policy = plan.get("selection_policy", "success")
+    if selection_policy == "auto":
+        selection_policy = "tracking" if recipe == "tier23-load-transfer" else "success"
+    if selection_policy != "success":
+        command.extend(["--selection-policy", selection_policy])
     return command
 
 
@@ -141,6 +181,18 @@ def run(args):
         raise ValueError("max-jobs must be positive")
     deadline = parse_deadline(args.deadline_utc)
     plan = make_plan(args)
+    from training.core.input_selection import input_selection_record, warn_input_selection
+    selections = []
+    for job in plan["jobs"]:
+        record = input_selection_record(job["job"])
+        if record["job_sha256"] != job["job_sha256"]:
+            raise ValueError("Selected portable job changed during batch preparation")
+        if "input_selection" in job:
+            record["selection_reason"] = job["input_selection"]["selection_reason"]
+            if record != job["input_selection"]:
+                raise ValueError("Original fallback evidence differs from batch plan")
+        warn_input_selection(record)
+        selections.append(record)
     if args.dry_run:
         print(json.dumps(plan, indent=2))
         return 0
@@ -155,6 +207,14 @@ def run(args):
                 raise ValueError("Batch resume arguments/jobs differ from immutable batch_plan.json")
         else:
             write_json(path, plan)
+        selection_path = root / "input_selection.json"
+        selection_evidence = {"schema": "v2d_policy_batch_input_selection_v1",
+                              "batch_plan_sha256": digest(path), "jobs": selections}
+        if selection_path.exists():
+            if json.loads(selection_path.read_text(encoding="utf-8")) != selection_evidence:
+                raise ValueError("Batch input selection evidence changed")
+        else:
+            write_json(selection_path, selection_evidence)
         status = {"schema": "v2d_policy_batch_status_v1", "state": "running", "episodes": [],
                   "plan_sha256": digest(path), "active_episode": None}
         for job in plan["jobs"]:
@@ -211,6 +271,10 @@ def parser():
                    help="Opt-in acquisition guidance for Tier 2/3 shards")
     p.add_argument("--placement-guidance", choices=("off", "supported-release"), default="off",
                    help="Opt-in support-aware release for Tier 2/3 shards")
+    p.add_argument("--recipe", choices=("legacy", "auto", "tier1-precision", "tier23-load-transfer"), default="legacy",
+                   help="legacy preserves resumes; auto uses Tier 1 precision or Tier 2/3 load transfer")
+    p.add_argument("--selection-policy", choices=("auto", "success", "tracking"), default="success",
+                   help="Fixed ranking; auto uses success for Tier 1 and tracking for Tier 2/3")
     p.add_argument("--dry-run", action="store_true", help="Print the complete deterministic roster without writing or training")
     return p
 

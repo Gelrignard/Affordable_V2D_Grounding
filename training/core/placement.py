@@ -15,6 +15,18 @@ import numpy as np
 import warp as wp
 
 
+class PlacementNotApplicable(ValueError):
+    """A valid task lacks the geometry/phase required by placement shaping.
+
+    Automatic recipes may catch this exact type. Asset, coordinate, physics and
+    configuration contract errors remain ordinary exceptions and must stop.
+    """
+    def __init__(self, reason, message, *, audit=None):
+        super().__init__(message)
+        self.reason = reason
+        self.audit = dict(audit or {}, applicability="not_applicable", reason=reason)
+
+
 PLACEMENT_DIAGNOSTIC_NAMES = (
     'support_load_fraction', 'object_linear_speed', 'object_angular_speed',
     'placement_ready', 'method_window', 'placement_bonus',
@@ -138,7 +150,7 @@ def apply_supported_placement(
         score[w] = total * frame_dt
 
 
-def table_from_native(reference, config, *, object_com_o=None):
+def table_from_native(reference, config, *, object_com_o=None, scene_has_support=True):
     """Hash and coordinate-check input assets before constructing a phase table."""
     import trimesh
     from flash_chord.assets.registry import support_usda_for_reference
@@ -152,7 +164,9 @@ def table_from_native(reference, config, *, object_com_o=None):
     if support_digest != config.placement_support_sha256:
         raise ValueError("placement support SHA256 mismatch")
     native_support = support_usda_for_reference(reference)
-    if native_support is None or hashlib.sha256(Path(native_support).read_bytes()).hexdigest() != support_digest:
+    if ((native_support is None and scene_has_support)
+            or (native_support is not None
+                and hashlib.sha256(Path(native_support).read_bytes()).hexdigest() != support_digest)):
         raise ValueError("placement support is not the executed native reference support")
     p = np.asarray(reference.object_body_pos_w())[:, 0]
     q = np.asarray(reference.object_body_quat_w())[:, 0]
@@ -166,9 +180,15 @@ def table_from_native(reference, config, *, object_com_o=None):
         observed = data['object_observed_mask'].copy()
     mesh_path = Path(reference.object_mesh_paths()[0])
     mesh = trimesh.load(mesh_path, force='mesh', process=False)
-    supports = parse_native_support(support_path, config.placement_support_sha256)
-    if len(supports) != 1:
-        raise ValueError("supported placement currently requires exactly one designated support cylinder")
+    try:
+        supports = parse_native_support(support_path, config.placement_support_sha256)
+    except ValueError as error:
+        # The parser has already opened the USD and checked authored transforms.
+        # Only its explicit empty-geometry result is an applicability outcome;
+        # malformed assets, unsupported transforms and dimensions stay fatal.
+        if str(error) != "No native Cylinder/Cube support shapes":
+            raise
+        supports = []
     table = build_placement_table(object_positions_w=p, object_quaternions_xyzw=q[:, [1, 2, 3, 0]],
         contact_active=np.stack([reference.contact_active(side) for side in config.sides], axis=1),
         observed_mask=observed, object_vertices_o=mesh.vertices,
@@ -176,8 +196,16 @@ def table_from_native(reference, config, *, object_com_o=None):
         supports=supports, frame_dt=1.0 / reference.fps,
         source_hashes={'reference_npz': digest, 'support_usda': support_digest,
                        'mesh': hashlib.sha256(mesh_path.read_bytes()).hexdigest()})
+    # Constructing the table validates every input even when this task lacks a
+    # supported phase. Thus a no-support task cannot hide corrupt sidecars,
+    # malformed masks, nonfinite geometry, or native/reference mismatches.
+    if not scene_has_support:
+        raise PlacementNotApplicable("no_executed_support", "The valid scene has no executed support", audit=table.audit)
+    if len(supports) != 1 or supports[0]['kind'] != 'cylinder':
+        raise PlacementNotApplicable("no_designated_support_cylinder",
+            "The task has no single designated support cylinder for placement shaping", audit=table.audit)
     if table.audit['active_windows'] == 0:
-        raise ValueError("placement has no valid release window: " + json.dumps(table.audit))
+        raise PlacementNotApplicable("no_valid_release_window", "The task has no valid supported-release window", audit=table.audit)
     if table.support['kind'] != 'cylinder':
         raise ValueError('runtime placement shaping currently supports a designated cylinder only')
     return table, table.support
@@ -290,8 +318,9 @@ def preflight_placement_config(resolved_config):
     if not objective_values.get('placement_enabled', False):
         return {'enabled': False, 'active_windows': 0, 'status': 'disabled'}
     scene = values['scene']
-    if not scene.get('support', False):
-        raise ValueError('placement requires the executed scene support')
+    scene_has_support = scene.get('support', False)
+    if type(scene_has_support) is not bool:
+        raise ValueError('placement scene support setting must be boolean')
     if scene.get('object_scale_min', 1.0) != 1.0 or scene.get('object_scale_max', 1.0) != 1.0:
         raise ValueError('placement requires unscaled object geometry')
     from hydra.utils import instantiate
@@ -310,7 +339,7 @@ def preflight_placement_config(resolved_config):
             raise ValueError('placement preflight requires one rigid-object inertial')
         origin = inertials[0].find('origin')
         com = np.zeros(3) if origin is None else np.fromstring(origin.get('xyz', '0 0 0'), sep=' ')
-        table, _ = table_from_native(reference, config, object_com_o=com)
+        table, _ = table_from_native(reference, config, object_com_o=com, scene_has_support=scene_has_support)
     return dict(table.audit, enabled=True, preflight_device='cpu', native_binding=True,
                 reference_frames=int(reference.num_frames), runtime_contact_binding='validated during environment construction')
 

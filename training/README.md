@@ -19,8 +19,9 @@ training/
   configs/      committed policy resource and execution defaults
 ```
 
-`python -m training --help` lists the entrypoints. The equivalent explicit modules
-are `training.scripts.prepare`, `training.scripts.pipeline`,
+`python -m training run` is the end-to-end entrypoint; `python training/scripts/run.py`
+and `python -m training.scripts.run` are equivalent. `python -m training --help`
+lists the lower-level entrypoints: `training.scripts.prepare`, `training.scripts.pipeline`,
 `training.scripts.batch`, `training.evaluate.policy`, `training.evaluate.export`,
 and `training.evaluate.score_clean_reference`.
 
@@ -46,15 +47,29 @@ silently switch configurations.
 ## Automatic processing
 
 ```bash
-python -m training.scripts.pipeline \
-  --job /data/jobs/tier2/episode_000003/corrected \
+python training/scripts/run.py \
+  --job /data/jobs/tier2/episode_000003 \
   --runtime /opt/v2d-runtime --output /runs/tier2/episode_000003 \
   --deadline-utc "$DEADLINE_UTC" \
   --dataset-input /data/inputs/tier2 --submission-kit /opt/v2d_submission_kit
 ```
 
 Set a future UTC deadline first. Add `--prepare-only` to perform CPU validation
-without training. Native acquisition and precision refinement form one policy
+without training. A variant directory is used explicitly; an episode directory
+prefers corrected and otherwise warns before using original. False or unknown
+correction acceptance flags remain recorded as guidance quality, not proof of
+physical correctness. Corrupt or failed inputs are errors.
+
+The entry selects `tier1-precision` with success ranking for Tier 1: native
+acquisition followed by up to 90M precision transitions. Tier 2/3 selects
+`tier23-load-transfer` with tracking ranking: native acquisition, 60M precision,
+then up to 30M `supported_load_transfer_v2`. The final phase uses actual support
+load, settling and finger-release credit when the checked support and release
+window apply; inapplicability is recorded and the phase uses precision instead.
+All tiers use 5M GPU replay, 2,048 worlds and batch size 2,048. Tier 3 is supported
+by the input/configuration interface but has not been GPU validated.
+
+Native acquisition and refinement form one policy
 lineage; no separate comparator is trained. Budget accounting includes failed
 work and evaluation, and a host lock serializes GPU jobs. Completed stages can be
 verified and reused with the identical command; partial or failed training is
@@ -62,9 +77,19 @@ never restarted automatically.
 
 Evaluation retains all frames and all 16 worlds, including failures. It starts at
 exact frame zero with no reset/global assistance and no within-attempt reset.
-Checkpoint ranking uses the input reference. Submission export always uses world
+Success ranking is MP-SR, SP-SR, ADD-AUC, then lower MPPE; tracking ranking is
+ADD-AUC, lower MPPE, MP-SR, then SP-SR. Checkpoint ranking uses the input reference.
+Submission export always uses world
 0, never an outcome-selected world. Clean-reference scoring is a separate CPU
 step after those choices are fixed.
+
+Use `--bundle /data/bundle --tier 2 --episode 3 --urdf /path/main_with_hand.urdf`
+instead of `--job` to prepare an available correction-bundle episode before the
+same pipeline. Use `--jobs-root /data/jobs --gpu-hours 97.5` for a serial batch;
+the dataset argument then names the root containing `tier1/`, `tier2/`, `tier3/`.
+Batch `--dry-run` checks the exact input roster only; single-job `--prepare-only`
+also performs native scene and export preflight. See the handoff for shard and
+complete-roster examples.
 
 ## Container
 

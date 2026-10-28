@@ -1,6 +1,6 @@
 # Automatic policy training handoff
 
-Run this from a clean clone of `main`. One prepared episode job goes through validation, policy acquisition, precision refinement, full unassisted evaluation, deterministic checkpoint selection and trajectory export without an agent or manual processing decision. `training.scripts.batch` runs the same command over a stable episode roster and splits it across machines using disjoint shard indices.
+Use one clean committed checkout for all tiers. `training/scripts/run.py` takes an available prepared episode or correction bundle through validation, native policy acquisition, tier-specific refinement, full unassisted evaluation, deterministic checkpoint selection and official trajectory export. Its batch mode uses a stable roster and disjoint shard indices. No agent or manual checkpoint choice is needed.
 
 ## Inputs and environment
 
@@ -9,17 +9,18 @@ The input is a portable `v2d_policy_job_v1` directory, containing `job.json`, `m
 ```bash
 python -m training prepare --bundle /data/portable_bundle \
   --urdf /opt/v2d-runtime/robotic_grounding/flash_chord/src/flash_chord/assets/urdfs/g1/main_with_hand.urdf \
-  --output /data/jobs --all --variants corrected
+  --output /data/jobs --all --variants auto
 ```
 
 The policy command consumes these prepared artifacts. Tier 3 jobs require precomputed motion and an explicit mapping into the released coordinate frame. No clean target is supplied to policy training or checkpoint selection.
 
-Training runs on Linux with one GPU per worker. Clone this repository and obtain the pinned native runtime and its assets:
+Training runs on Linux with one GPU per worker. Set `V2D_CODE_COMMIT` to the published commit you intend to run; use that same commit for every tier and teammate. Clone this repository and obtain the pinned native runtime and its assets:
 
 ```bash
 git clone https://github.com/Gelrignard/Affordable_V2D_Grounding.git
 cd Affordable_V2D_Grounding
-git checkout main
+git checkout "$V2D_CODE_COMMIT"
+git rev-parse HEAD
 python -m training.scripts.bootstrap --runtime /opt/v2d-runtime --download-assets
 ```
 
@@ -50,90 +51,155 @@ The exporter checks the complete reference transform against `reference.npz`; it
 
 ## One episode, one command
 
-Run in the native environment, from this repository's root:
+Set `DEADLINE_UTC` to the actual future ISO8601 UTC deadline. Run from this
+repository in the native environment:
 
 ```bash
-python -m training.scripts.pipeline \
-  --job /data/jobs/tier2/episode_000003/corrected \
-  --runtime /opt/v2d-runtime \
-  --output /runs/tier2/episode_000003 \
-  --training-budget-seconds 10800 --total-budget-seconds 11700 \
+python training/scripts/run.py \
+  --job /data/jobs/tier1/episode_000003 \
+  --runtime /opt/v2d-runtime --output /runs/tier1/episode_000003 \
   --deadline-utc "$DEADLINE_UTC" \
-  --dataset-input /data/inputs/tier2 \
-  --submission-kit /opt/v2d_submission_kit
+  --dataset-input /data/inputs/tier1 --submission-kit /opt/v2d_submission_kit
 ```
 
-Set `DEADLINE_UTC` to the actual future ISO8601 UTC deadline for your run before invoking the command. `--prepare-only` runs the same CPU preflight without GPU training. Supply `--parent-state /path/state_N.safetensors` only when reusing a compatible native checkpoint for this exact episode; the command verifies its configuration, trajectory, assets, counters and policy pair. Otherwise acquisition starts from seed 42 with native SONIC and the original assistance curriculum. This acquisition is part of learning the policy; it does not run a separate baseline evaluation.
+`python -m training run` and `python -m training.scripts.run` are equivalent.
+An absolute path to `training/scripts/run.py` also works outside the repository;
+relative input/output paths are resolved from your current directory.
 
-Omitting both export arguments produces selected policies and evaluation evidence only. Supplying both includes the official-format trajectory export in successful completion.
+`--job` accepts a direct variant directory or an episode directory. Automatic
+selection prefers the produced `corrected` job, otherwise uses `original` with
+a warning. An explicitly named original remains original. A correction marked
+`physical_accepted=false`, a diagnostic candidate, or a reference without contact
+labels is usable guidance with its limitations recorded; it is not promoted to
+physically accepted ground truth. Corrupt artifacts, inconsistent hashes and
+failed correction-bundle stages are errors, not automatic fallback cases.
 
-For the experimental Tier 2/3 approach objective, add
-`--acquisition-guidance grasp-region` to the pipeline or batch command. The same
-flag is fixed for the entire run and recorded in its immutable request. CPU
-preflight validates the input-derived acquisition regions before training;
-at least one valid region is required. Region construction and checkpoint
-selection are automatic. Use the default `precision` profile for Tier 1.
-See [the method description](POLICY_METHOD.md#optional-tier-23-acquisition-regions)
-for the exact scope of this change.
+Add `--prepare-only` for CPU input, native scene and export preflight without
+training. Supply `--parent-state /path/state_N.safetensors` only to reuse a
+compatible native learner checkpoint for this exact tier and episode. Its input,
+physics, optimizer clocks and policy pair are checked. Otherwise native learning
+starts from seed 42 with frozen SONIC and the native assistance curriculum.
+No separate baseline evaluation is trained or required.
 
-The separate experimental placement variant uses
-`--placement-guidance supported-release --acquisition-guidance precision`.
-It automatically validates a final supported-release window from the job's
-`reference.npz` and `assets/support.usda`. It requires one unscaled object and
-one native axis-aligned cylindrical support, and stops in CPU preflight if no
-valid window exists. The approach variant and placement variant are mutually
-exclusive. Keep the hashed input sidecars available with the checkpoint.
-This branch identifies the placement objective as `supported_load_transfer_v2`:
-separate support-load, settling and finger-release credit with normal hand
-tracking. The default Tier 1 precision method leaves this objective disabled.
-
-The fixed processing rule is:
-
-1. Verify committed source, pinned runtime, joint/asset/input hashes, frame count and export inputs; save immutable effective configuration.
-2. Train the native acquisition phase to 349,999,104 transitions, under a 9,000-second child cap. A short or failed acquisition stops with an error rather than refining an incomplete parent.
-3. Restore the full native learner state, refill fresh replay, and run the same precision recipe for up to 90M more transitions within the remaining episode budget. Save checkpoints every approximately 10M transitions. A clean time-limited refinement can use its valid final checkpoint.
-4. Evaluate the final checkpoint and the latest saved checkpoints at or before nominal +60M and +40M, allowing one 2,048-transition collection for native save rounding and never going beyond the final checkpoint. Deduplicate to at most three. All evaluations retain every frame and all 16 worlds, start at exact frame zero, use no reset/global object assistance, and never reset a failed world during an attempt.
-5. Select by descending MP-SR, then SP-SR, then ADD-AUC, then ascending MPPE. Ties prefer fewer transitions. This rule uses the input reference only and is saved before evaluation. There is no manual checkpoint choice or parameter sweep.
-6. Export fixed world 0 from the selected checkpoint, verify the official trajectory reader and hashes, and mark the episode complete. A successful world is never chosen after observing outcomes.
-
-The full rollout remains mandatory even when a Tier 1 input contains invisible
-frames. For Tier 1, the exported rows follow the released official visibility
-grid and retain original frame indices and timestamps. The manifest records
-both source and exported frame counts and every officially unscored frame.
-Tier 2/3 input visibility cannot redefine the clean evaluation grid.
-
-Defaults retain 2,048 worlds and batch size 2,048, 5M GPU replay, JAX memory fraction 0.60, a 23,000 MiB device-memory guard, and a three-hour training cap. Earlier experiment commits used 4M replay. Three bounded evaluations are reserved within the 3.25-hour total cap. Every GPU child enforces both wall time and calendar deadline. A host-level lock and GPU-idle checks prevent a second worker from sharing the device accidentally.
-
-## Batch and teammate shards
-
-Preview the exact roster without GPU work:
+To begin from an existing correction bundle instead of a prepared job:
 
 ```bash
-python -m training.scripts.batch \
-  --jobs /data/jobs --runtime /opt/v2d-runtime --output /runs/shard_0 \
+python training/scripts/run.py \
+  --bundle /data/portable_bundle --tier 2 --episode 3 \
+  --urdf /opt/v2d-runtime/robotic_grounding/flash_chord/src/flash_chord/assets/urdfs/g1/main_with_hand.urdf \
+  --runtime /opt/v2d-runtime --output /runs/tier2/episode_000003 \
+  --deadline-utc "$DEADLINE_UTC" \
+  --dataset-input /data/inputs/tier2 --submission-kit /opt/v2d_submission_kit
+```
+
+This performs automatic available-reference selection and CPU job preparation
+under `output/prepared_input/`, then runs the same policy pipeline. A preparation
+receipt binds the bundle, URDF and resulting job hashes. Repeating the command
+verifies and reuses the same preparation; it never overwrites changed or partial
+artifacts. This entry starts from prepared motion or a correction bundle. Use the
+[correction pipeline](../correction/PIPELINE.md) upstream for raw motion; this
+command does not reconstruct video.
+
+## One source revision, tier-specific recipes
+
+`--recipe auto` and `--selection-policy auto` are the entry-point defaults:
+
+| Input | Training lineage | Fixed checkpoint ranking |
+| --- | --- | --- |
+| Tier 1 | Native acquisition to 349,999,104 transitions, then up to 90M precision refinement | Descending MP-SR, SP-SR, ADD-AUC; ascending MPPE |
+| Tier 2/3 | Same native acquisition, 60M precision, then up to 30M supported load transfer | Descending ADD-AUC; ascending MPPE; descending MP-SR, SP-SR |
+
+Tier 1 keeps the existing precision objective and success ranking. Tier 2/3's
+final phase uses `supported_load_transfer_v2`: separate partial credit for actual
+support load, settling and finger disengagement. The original hand tracking is
+retained. The checked input geometry supplies a placement region, not a claim
+that imperfect motion or quasistatic correction is correct.
+
+The supported phase currently requires an unscaled object, a compatible native
+cylindrical support, and a valid final release window. A typed geometry/window
+inapplicability emits a deterministic warning, records its reason, and uses
+precision for the final phase. This applies to valid inputs without a supported
+cylinder or final release window. A scaled-object contract violation, hash
+mismatch, malformed reference or runtime binding error remains a failure.
+No support is invented. Acquisition-region
+experiments are not enabled by these automatic recipes. Tier 3 uses the same
+configuration and input contract but has not been GPU validated.
+
+All tiers use 2,048 worlds, batch size 2,048, 5M GPU replay, the same native
+FlashSAC/SONIC action interface and the original optimizer clocks. The default
+budget is 10,800 training seconds and 11,700 total GPU seconds per episode,
+including evaluation. The native acquisition child has a 9,000-second cap and
+must finish before refinement. The Tier 2/3 precision stage must reach its full
+60M target before load transfer; a short first stage stops rather than continuing
+from a different parent. Tier 1 refinement and the final Tier 2/3 30M stage may
+end cleanly at a valid checkpoint under the wall-time cap. The saved status states
+what actually ran.
+
+The pipeline fixes candidate checkpoints before evaluation and records their
+actual transition counts in `candidate_plan.json`. Native save rounding means a
+nominal boundary may select an earlier saved checkpoint; read the recorded
+counts rather than assuming an exact 40M/60M/90M comparison. Ties after the four
+ranking metrics prefer fewer transitions, then checkpoint hash. A recipe or
+ranking override must be explicit and becomes part of the immutable request.
+The lower-level `pipeline` and `batch` commands retain their `legacy` defaults
+for existing runs; use `run` for automatic tier selection.
+
+Every candidate is evaluated over every frame and all 16 worlds, including
+failures, from exact frame zero with no reset/global object assistance and no
+within-attempt reset. Selection uses only the supplied tier's input reference.
+World 0 is always exported; a successful world is never chosen after outcomes.
+Tier 1 export follows the official visible-frame grid while retaining original
+frame IDs and timestamps, and the manifest lists every unscored source frame.
+Tier 2/3 input visibility cannot redefine a clean evaluation grid. Clean target
+scoring is separate from training, checkpoint selection and export.
+
+## Batches and teammate shards
+
+Preview the validated roster without GPU work:
+
+```bash
+python training/scripts/run.py \
+  --jobs-root /data/jobs --runtime /opt/v2d-runtime --output /runs/shard_0 \
   --shard-index 0 --shard-count 3 --require-complete \
   --gpu-hours 97.5 --deadline-utc "$DEADLINE_UTC" \
-  --dataset-root /data/inputs --submission-kit /opt/v2d_submission_kit \
+  --dataset-input /data/inputs --submission-kit /opt/v2d_submission_kit \
   --dry-run
 ```
 
-Remove `--dry-run` to execute. Give each teammate a distinct `--shard-index`, the same `--shard-count`, and the same prepared input roster. The default roster includes all three tiers; `--require-complete` verifies all 30 episode identities per requested tier before any GPU work. Use `--tiers 2 --episodes 3 25` for a subset. `--max-jobs` optionally bounds the selected shard. The example 97.5 hours reserves the full 3.25-hour cap for each of 30 episodes; choose a budget/deadline that matches your actual assigned workload.
+Remove `--dry-run` to execute serially. Here `--dataset-input` is the root
+containing `tier1/`, `tier2/`, and `tier3/`; for a single job it is the tier
+directory itself. Automatic recipe/ranking selection happens independently for
+each job, so one batch may contain all tiers.
 
-Each shard runs serially and accounts for failed work as well as completed work. It stops before an episode if the remaining shard budget cannot cover that episode's remaining allowance. It never rents compute, starts another instance, or submits a leaderboard entry.
+Give teammates distinct `--shard-index` values, the same `--shard-count`, the
+same source commit and the same input roster. `--require-complete` requires all
+30 identities per requested tier before any GPU work. `--tiers 2 --episodes 3 25`
+selects a subset; `--max-jobs` caps a shard. The 97.5-hour example reserves 3.25
+hours for each of 30 episodes; choose the actual budget and deadline for your
+workload. Batch `--dry-run` validates the roster and portable inputs only; use a
+single-job `--prepare-only` for native scene/export preflight.
 
-## Outputs and restart behavior
+## Outputs, limits and resume
 
-Each output directory contains:
+Each episode records:
 
-- `request.json`, `preparation.json`, stage manifests and configurations: source, input and parent provenance.
-- `ledger.json`: all charged GPU wall time, including failed work.
-- `bootstrap/` and `refinement/`: policies, compact learner states, metrics and logs.
-- `evaluation_N/`: complete rollout arrays, native trajectories, unassisted contract and scores.
-- `candidate_plan.json` and `selected_checkpoint.json`: fixed candidates, ranking rule, selected policy/state and SHA256 hashes.
-- `exports/tierN/episode_XXXXXX/`: official-format trajectory and export manifest when export arguments are supplied.
-- `pipeline_status.json`: `prepared`, `running`, `complete`, or `failed`, including a failing stage and reason.
+- `request.json`, preparation and phase configurations: source, inputs, recipe and parent provenance.
+- `input_selection.json`: selected reference variant and retained quality warnings.
+- `ledger.json`: charged GPU wall time, including failed work.
+- Training phase directories: policy/state pairs, actual clocks, metrics and logs.
+- `evaluation_N/`: all rollout arrays, unassisted evaluation contract and scores.
+- `candidate_plan.json` and `selected_checkpoint.json`: fixed candidates, ranking and selected policy/state hashes.
+- `exports/tierN/episode_XXXXXX/`: official trajectory and export manifest.
+- `pipeline_status.json`: prepared/running/complete/failed state and any failing stage.
 
-Repeat the identical command to verify and reuse completed stages. Completed episodes are verified without new GPU use, even after their original deadline. Source, paths, inputs, budgets and deadlines cannot silently change within the same output. The pipeline refuses an active worker, a partial/failed GPU stage or altered evidence; it does not secretly restart training or choose a different method. This is automatic normal processing, with explicit errors for input or infrastructure failures.
+Repeat the identical command to verify and reuse completed work. A completed
+run is checked without new GPU work even after its original deadline. Source,
+paths, inputs, budgets and deadlines cannot silently change in the same output.
+Partial or failed GPU phases do not restart automatically. A host lock and GPU
+idle checks prevent overlapping workers; budgets and calendar deadlines apply
+to every child. Batch accounting includes failed work and stops before a new
+episode when its remaining allowance cannot fit. This command neither rents
+compute nor uploads a leaderboard submission.
 
 ## Official evaluation packaging
 

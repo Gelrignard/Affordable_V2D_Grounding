@@ -4,6 +4,7 @@ import importlib
 import sys
 
 COMMANDS = {
+    "run": "training.scripts.run",
     "prepare": "training.scripts.prepare",
     "pipeline": "training.scripts.pipeline",
     "batch": "training.scripts.batch",

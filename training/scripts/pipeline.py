@@ -5,7 +5,10 @@ Run with the pinned runtime's Python: ``python -m training.scripts.pipeline
 ``--dry-run``) performs the same CPU preflight without launching GPU work.
 
 The native 350M phase is policy acquisition, not a separately evaluated baseline.
-Refinement runs once for up to 90M additional transitions. Native saves occur at
+Tier 1 refinement runs once for up to 90M additional transitions. Tier 2/3 can
+use 60M precision followed by 30M supported load transfer, on their own inputs.
+The second phase restores the first phase's optimizer clocks and original reward
+ramp, and refills fresh replay. Native saves occur at
 absolute 10M intervals; evaluate final, latest <=60M and latest <=40M additional
 checkpoints (one 2048-transition collection tolerance), deduplicated, at most
 three. Rank input-reference MP-SR, SP-SR, AUC,
@@ -51,6 +54,52 @@ EVALUATOR_CHILD_SECONDS = DEFAULTS["evaluator_child_seconds"]
 SUPERVISION_RESERVE = DEFAULTS["supervision_reserve"]
 SELECTION_RULE = ["maniptrans_sr:descending", "spider_sr:descending", "add_auc:descending",
                   "mppe_cm:ascending", "environment_steps:ascending", "checkpoint_sha256:ascending"]
+TRACKING_SELECTION_RULE = ["add_auc:descending", "mppe_cm:ascending", "maniptrans_sr:descending",
+                          "spider_sr:descending", "environment_steps:ascending", "checkpoint_sha256:ascending"]
+RECIPES = ("legacy", "tier1-precision", "tier23-load-transfer")
+
+
+def selection_rule(policy):
+    if policy not in ("success", "tracking"):
+        raise ValueError("Unknown checkpoint selection policy")
+    return list(TRACKING_SELECTION_RULE if policy == "tracking" else SELECTION_RULE)
+
+
+def validate_recipe(recipe, tier, acquisition="precision", placement="off"):
+    if recipe not in RECIPES:
+        raise ValueError("Unknown training recipe")
+    if recipe == "legacy":
+        return placement
+    if acquisition != "precision":
+        raise ValueError("Named recipes require precision acquisition")
+    if recipe == "tier1-precision":
+        if tier != 1 or placement != "off":
+            raise ValueError("Tier 1 precision requires Tier 1 input and placement off")
+        return "off"
+    if tier not in (2, 3):
+        raise ValueError("Tier 2/3 load transfer requires that tier's own input")
+    return "supported-release"
+
+
+def validate_recipe_parent(recipe, parent):
+    if recipe != "legacy" and parent:
+        saved = parent["resolved_config"]
+        if (parent["environment_steps"] != BOOTSTRAP_STEPS or saved.get("refinement")
+                or saved.get("overnight") or saved.get("env", {}).get("objective", {}).get("_target_")
+                != "flash_chord.objectives.recon_body.ReconBodyObjectiveConfig"):
+            raise ValueError("Named recipes must start from this episode's native 350M parent")
+
+
+def refinement_schedule(request, preparation):
+    """Fixed phases: applicability is determined on CPU before GPU allocation."""
+    if request.get("recipe") != "tier23-load-transfer":
+        return [("refinement", REFINEMENT_STEPS, request.get("placement_guidance", "off"))]
+    audit = guard.read_json(preparation["placement_preflight"]["audit"])
+    applicable = audit.get("applicable", True)
+    if not isinstance(applicable, bool):
+        raise ValueError("Invalid placement applicability record")
+    return [("refinement", 60_000_000, "off"),
+            ("load_transfer", 30_000_000, "supported-release" if applicable else "off")]
 
 
 @contextlib.contextmanager
@@ -270,6 +319,7 @@ def prepare(request):
     config_path = prepared / "native_config.json"
     immutable_json(config_path, cfg)
     parent = validate_parent(request["parent_state"], cfg, job) if request["parent_state"] else None
+    validate_recipe_parent(request.get("recipe", "legacy"), parent)
     record = {"schema": "v2d_policy_preparation_v1", "job": job, "native_config": str(config_path),
               "native_config_sha256": sha(config_path), "runtime_motion": str(motion),
               "runtime_motion_sha256": sha(motion), "support": has_support, "parent": parent,
@@ -293,7 +343,7 @@ def prepare(request):
             "config": str(preview_path), "config_sha256": sha(preview_path),
             "audit": str(audit_path), "audit_sha256": sha(audit_path)}
     if request.get("placement_guidance") == "supported-release":
-        from training.core.placement import preflight_placement_config
+        from training.core.placement import PlacementNotApplicable, preflight_placement_config
         if request.get("acquisition_guidance", "precision") != "precision":
             raise ValueError("Supported release requires precision acquisition")
         if job["manifest"]["tier"] == 1:
@@ -309,7 +359,17 @@ def prepare(request):
         preview_path = prepared / "placement_config.json"
         audit_path = prepared / "placement_guidance.json"
         immutable_json(preview_path, preview)
-        immutable_json(audit_path, preflight_placement_config(preview))
+        try:
+            placement_audit = preflight_placement_config(preview)
+        except PlacementNotApplicable as exc:
+            if request.get("recipe") != "tier23-load-transfer":
+                raise
+            placement_audit = {"applicable": False, "reason": exc.reason,
+                               "details": exc.audit, "fallback": "precision_30M",
+                               "warning": str(exc)}
+            print(f"WARNING: load transfer is not applicable ({exc}); "
+                  "the final 30M phase will use precision guidance.", file=sys.stderr)
+        immutable_json(audit_path, placement_audit)
         record["placement_preflight"] = {
             "config": str(preview_path), "config_sha256": sha(preview_path),
             "audit": str(audit_path), "audit_sha256": sha(audit_path)}
@@ -357,7 +417,7 @@ def choose_candidates(records, start, final):
     return selected
 
 
-def rank_key(candidate):
+def rank_key(candidate, policy="success"):
     scores = candidate["metrics"]
     names = ("maniptrans_sr", "spider_sr", "add_auc", "mppe_cm")
     if any(isinstance(scores.get(key), bool) or not isinstance(scores.get(key), (float, int))
@@ -365,13 +425,17 @@ def rank_key(candidate):
         raise ValueError("Cannot rank nonfinite/missing metrics")
     if any(not 0 <= scores[key] <= 1 for key in names[:3]) or scores["mppe_cm"] < 0:
         raise ValueError("Metrics are outside their valid ranges")
+    selection_rule(policy)
+    if policy == "tracking":
+        return (-scores["add_auc"], scores["mppe_cm"], -scores["maniptrans_sr"], -scores["spider_sr"],
+                candidate["environment_steps"], candidate["checkpoint_sha256"])
     return (-scores["maniptrans_sr"], -scores["spider_sr"], -scores["add_auc"], scores["mppe_cm"],
             candidate["environment_steps"], candidate["checkpoint_sha256"])
 
 
-def refinement_checkpoints(output, config):
+def refinement_checkpoints(output, config, stage="refinement"):
     records = []
-    for path in sorted((Path(output) / "refinement/checkpoints").glob("state_*.safetensors")):
+    for path in sorted((Path(output) / stage / "checkpoints").glob("state_*.safetensors")):
         _, _, metadata = checkpoint_pair(path)
         if json.loads(metadata["resolved_config_json"]) != config:
             raise ValueError("Refinement checkpoint has a different effective configuration")
@@ -476,11 +540,13 @@ def train_stage(request, preparation, candidate, stage, config, *, parent=None):
                    "--deadline-utc", request["deadline_utc"], "--checkpoint-interval",
                    str(50_000_000 if parent is None else CHECKPOINT_INTERVAL)]
         if parent is not None:
-            command.extend(["--acquisition-guidance", request.get("acquisition_guidance", "precision")])
-            command.extend(["--placement-guidance", request.get("placement_guidance", "off")])
-            if request.get("acquisition_guidance") == "grasp-region":
+            objective = config["env"]["objective"]
+            acquisition = "grasp-region" if objective.get("acquisition_enabled", False) else "precision"
+            placement = "supported-release" if objective.get("placement_enabled", False) else "off"
+            command.extend(["--acquisition-guidance", acquisition, "--placement-guidance", placement])
+            if acquisition == "grasp-region":
                 command.extend(["--acquisition-reference", str(Path(request["job"]) / "reference.npz")])
-            if request.get("placement_guidance") == "supported-release":
+            if placement == "supported-release":
                 command.extend(["--placement-reference", str(Path(request["job"]) / "reference.npz"),
                                 "--placement-support", str(Path(request["job"]) / "assets/support.usda")])
         immutable_json(output / (stage + "_manifest.json"), {"source": request["source"], "job": preparation["job"],
@@ -617,7 +683,10 @@ def verify_selected(selected):
         directory = Path(record["evaluation_directory"])
         if sha(directory / "evaluation.json") != record["evaluation_sha256"] or sha(directory / "rollout_arrays.npz") != record["rollout_arrays_sha256"]:
             raise ValueError("Selected evaluation evidence changed")
-    if min(selected["candidates"], key=rank_key)["checkpoint_sha256"] != selected["checkpoint_sha256"]:
+    policy = "tracking" if selected.get("selection_rule") == TRACKING_SELECTION_RULE else "success"
+    if selected.get("selection_rule") != selection_rule(policy):
+        raise ValueError("Unknown saved checkpoint selection rule")
+    if min(selected["candidates"], key=lambda c: rank_key(c, policy))["checkpoint_sha256"] != selected["checkpoint_sha256"]:
         raise ValueError("Selection does not match preregistered ranking")
 
 
@@ -638,6 +707,11 @@ def run(args):
     with output_lock(output / "pipeline.lock"):
         stage = "request"
         try:
+            recipe = getattr(args, "recipe", "legacy")
+            ranking = getattr(args, "selection_policy", "success")
+            placement = validate_recipe(recipe, job_identity(args.job)["manifest"]["tier"],
+                                        getattr(args, "acquisition_guidance", "precision"),
+                                        getattr(args, "placement_guidance", "off"))
             previous = guard.read_json(output / "request.json")
             deadline = args.deadline_utc or (previous["deadline_utc"] if previous else
                          (dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=args.total_budget_seconds)).isoformat())
@@ -648,13 +722,15 @@ def run(args):
                    "deadline_utc": deadline, "source": source_identity(), "runtime_commit": runtime_identity(args.runtime),
                    "dataset_input": str(Path(args.dataset_input).resolve()) if args.dataset_input else None,
                    "submission_kit": str(Path(args.submission_kit).resolve()) if args.submission_kit else None,
-                   "selection_rule": SELECTION_RULE, "refinement_transition_cap": REFINEMENT_STEPS,
+                   "selection_rule": selection_rule(ranking), "refinement_transition_cap": REFINEMENT_STEPS,
                    "candidate_subset": "final, latest<=60M additional, latest<=40M additional; deduplicated",
                    "candidate_boundary_tolerance_transitions": WORLDS}
             if getattr(args, "acquisition_guidance", "precision") != "precision":
                 request["acquisition_guidance"] = args.acquisition_guidance
-            if getattr(args, "placement_guidance", "off") != "off":
-                request["placement_guidance"] = args.placement_guidance
+            if placement != "off":
+                request["placement_guidance"] = placement
+            if recipe != "legacy":
+                request["recipe"] = recipe
             policy = guard.make_budget_policy(args.total_budget_seconds, args.training_budget_seconds, 1)
             immutable_json(output / "request.json", request)
             stage = "prepare"
@@ -670,8 +746,15 @@ def run(args):
                 if sha(output / "selected_checkpoint.json") != existing["selected_manifest_sha256"]:
                     raise ValueError("Selected manifest changed")
                 verify_selected(selected)
-                for name in ("bootstrap", "refinement"):
+                required_stages = {"refinement"}
+                if preparation["parent"] is None:
+                    required_stages.add("bootstrap")
+                if recipe == "tier23-load-transfer":
+                    required_stages.add("load_transfer")
+                for name in ("bootstrap", "refinement", "load_transfer"):
                     record = guard.read_json(output / (name + "_complete.json"))
+                    if name in required_stages and not record:
+                        raise ValueError(f"Completed pipeline is missing its {name} stage record")
                     if record:
                         verify_stage(output, record)
                 if request["dataset_input"]:
@@ -696,35 +779,43 @@ def run(args):
                     stage = "bootstrap"
                     write_progress(output, stage)
                     parent = train_stage(request, preparation, candidate, stage, guard.read_json(preparation["native_config"]))
-                stage = "refinement"
-                write_progress(output, stage)
-                _, _, metadata = checkpoint_pair(parent["state"])
                 start = parent["environment_steps"]
-                end, _ = transition_budget(start, REFINEMENT_STEPS)
-                config = build_config(json.loads(metadata["resolved_config_json"]), state=Path(parent["state"]),
-                                      output=output / stage, start=start, end=end, phase="refine", checkpoint_interval=CHECKPOINT_INTERVAL,
-                                      acquisition_guidance=request.get("acquisition_guidance", "precision"),
-                                      acquisition_reference=str(Path(request["job"]) / "reference.npz"),
-                                      placement_guidance=request.get("placement_guidance", "off"),
-                                      placement_reference=str(Path(request["job"]) / "reference.npz"),
-                                      placement_support=str(Path(request["job"]) / "assets/support.usda"))
-                final = train_stage(request, preparation, candidate, stage, config, parent=parent)
+                records = []
+                schedule = refinement_schedule(request, preparation)
+                stage_parent = parent
+                for index, (stage, additional, stage_placement) in enumerate(schedule):
+                    write_progress(output, stage)
+                    _, _, metadata = checkpoint_pair(stage_parent["state"])
+                    stage_start = stage_parent["environment_steps"]
+                    end, _ = transition_budget(stage_start, additional)
+                    config = build_config(json.loads(metadata["resolved_config_json"]), state=Path(stage_parent["state"]),
+                                          output=output / stage, start=stage_start, end=end, phase="refine", checkpoint_interval=CHECKPOINT_INTERVAL,
+                                          acquisition_guidance=request.get("acquisition_guidance", "precision"),
+                                          acquisition_reference=str(Path(request["job"]) / "reference.npz"),
+                                          placement_guidance=stage_placement,
+                                          placement_reference=str(Path(request["job"]) / "reference.npz"),
+                                          placement_support=str(Path(request["job"]) / "assets/support.usda"))
+                    final = train_stage(request, preparation, candidate, stage, config, parent=stage_parent)
+                    if index < len(schedule) - 1 and final["environment_steps"] != end:
+                        raise RuntimeError("Precision stage stopped short of 60M; load transfer was not started")
+                    records.extend(record for record in refinement_checkpoints(output, config, stage)
+                                   if stage_start < record["environment_steps"] <= final["environment_steps"])
+                    stage_parent = final
                 stage = "checkpoint_selection"
                 write_progress(output, stage)
-                records = refinement_checkpoints(output, config)
                 candidates = choose_candidates(records, start, final["environment_steps"])
-                immutable_json(output / "candidate_plan.json", {"selection_rule": SELECTION_RULE, "candidates": candidates,
+                immutable_json(output / "candidate_plan.json", {"selection_rule": request["selection_rule"], "candidates": candidates,
                                "refinement_start_steps": start, "clean_reference_used": False,
                                "boundary_tolerance_transitions": WORLDS, "boundary_capped_at_final": True})
                 stage = "evaluation"
                 write_progress(output, stage)
                 evaluated = [evaluate_candidate(request, preparation, candidate, record) for record in candidates]
-                winner = min(evaluated, key=rank_key)
+                winner = min(evaluated, key=lambda c: rank_key(c, ranking))
                 selected = {"schema": "v2d_selected_policy_v1", **winner,
                             "tier": preparation["job"]["manifest"]["tier"], "episode_index": preparation["job"]["manifest"]["episode_index"],
                             "job": request["job"], "runtime": request["runtime"], "source_commit": request["source"]["commit"],
                             "request_sha256": sha(output / "request.json"), "input_job_sha256": preparation["job"]["job_sha256"],
-                            "candidates": evaluated, "selection_rule": SELECTION_RULE, "clean_reference_used": False,
+                            "candidates": evaluated, "selection_rule": request["selection_rule"], "clean_reference_used": False,
                             "world0_export_required": True, "refinement_transition_cap_reached": final["environment_steps"] == end}
                 immutable_json(output / "selected_checkpoint.json", selected)
                 stage = "export"
@@ -745,6 +836,10 @@ def main(argv=None):
     parser.add_argument("--runtime")
     parser.add_argument("--output")
     parser.add_argument("--parent-state")
+    parser.add_argument("--recipe", choices=RECIPES, default="legacy",
+                        help="Tier 1: precision90M; Tier 2/3: precision60M then load-transfer30M")
+    parser.add_argument("--selection-policy", choices=("success", "tracking"), default="success",
+                        help="success: MP/SP/AUC/MPPE; tracking: AUC/MPPE/MP/SP")
     parser.add_argument("--acquisition-guidance", choices=("precision", "grasp-region"), default="precision",
                         help="Opt-in object-attached acquisition regions for Tier 2/3")
     parser.add_argument("--placement-guidance", choices=("off", "supported-release"), default="off",

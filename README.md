@@ -4,6 +4,36 @@ Robot grounding from human motion, object poses, and contact observations. The m
 
 ## Get started
 
+From the installed native environment and a committed checkout, one command runs
+an available episode through training, evaluation, selection and official export:
+
+```bash
+python training/scripts/run.py \
+  --job /data/jobs/tier1/episode_000003 \
+  --runtime /opt/v2d-runtime --output /runs/tier1/episode_000003 \
+  --deadline-utc "$DEADLINE_UTC" \
+  --dataset-input /data/inputs/tier1 --submission-kit /opt/v2d_submission_kit
+```
+
+Set `DEADLINE_UTC` to a future ISO8601 deadline. `python -m training run` is
+equivalent. The episode directory prefers its corrected job, otherwise uses its
+original job with an explicit warning; invalid artifacts remain errors. Add
+`--prepare-only` for CPU preflight. `--bundle` can prepare one episode from a
+correction bundle first; `--jobs-root` runs prepared batches and shards.
+
+The same source revision contains both tier-specific recipes, using 5M GPU replay:
+
+| Input tier | Automatic training recipe | Checkpoint ranking |
+| --- | --- | --- |
+| Tier 1 | Native acquisition, then up to 90M precision transitions | MP-SR, SP-SR, ADD-AUC, lower MPPE |
+| Tier 2/3 | Native acquisition, 60M precision, then up to 30M supported load transfer | ADD-AUC, lower MPPE, MP-SR, SP-SR |
+
+The placement phase falls back explicitly to precision when its checked support
+geometry or release window is inapplicable. Tier 3 uses the same configured
+method but has not been GPU validated. These are training recipes, not a claim
+that every episode succeeds. The entry point consumes prepared motion artifacts
+and does not reconstruct raw video.
+
 - [Prepare motion and contact references](docs/correction/PIPELINE.md)
 - [Run one episode or a batch of prepared episodes](docs/training/POLICY_HANDOFF.md)
 - [Training method and the role of dynamics](docs/training/POLICY_METHOD.md)
@@ -21,7 +51,10 @@ Human motion + object poses + contact observations
 
 Reference preparation preserves frame indices, coordinate transforms, observation masks, and source hashes. Tier 2 processing uses its supplied observations; clean references are used only for offline evaluation.
 
-For a prepared episode, the policy pipeline runs acquisition, refinement, checkpoint evaluation, selection, and export automatically. Selection uses a fixed rule. Batch execution supports deterministic shards and resuming completed episodes. See the handoff for input requirements and commands.
+For a prepared episode, the policy pipeline runs acquisition, refinement,
+checkpoint evaluation, selection, and export automatically. Selection uses the
+fixed rule for its recipe. Batch execution supports deterministic shards and
+resuming completed episodes. See the handoff for input requirements and commands.
 
 ## Repository layout
 

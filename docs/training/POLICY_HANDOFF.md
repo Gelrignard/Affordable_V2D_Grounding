@@ -76,6 +76,14 @@ selection are automatic. Use the default `precision` profile for Tier 1.
 See [the method description](POLICY_METHOD.md#optional-tier-23-acquisition-regions)
 for the exact scope of this change.
 
+The separate experimental placement variant uses
+`--placement-guidance supported-release --acquisition-guidance precision`.
+It automatically validates a final supported-release window from the job's
+`reference.npz` and `assets/support.usda`. It requires one unscaled object and
+one native axis-aligned cylindrical support, and stops in CPU preflight if no
+valid window exists. The approach variant and placement variant are mutually
+exclusive. Keep the hashed input sidecars available with the checkpoint.
+
 The fixed processing rule is:
 
 1. Verify committed source, pinned runtime, joint/asset/input hashes, frame count and export inputs; save immutable effective configuration.
@@ -85,7 +93,7 @@ The fixed processing rule is:
 5. Select by descending MP-SR, then SP-SR, then ADD-AUC, then ascending MPPE. Ties prefer fewer transitions. This rule uses the input reference only and is saved before evaluation. There is no manual checkpoint choice or parameter sweep.
 6. Export fixed world 0 from the selected checkpoint, verify the official trajectory reader and hashes, and mark the episode complete. A successful world is never chosen after observing outcomes.
 
-Defaults retain 2,048 worlds and batch size 2,048, 4M GPU replay, JAX memory fraction 0.60, a 23,000 MiB device-memory guard, and a three-hour training cap. Three bounded evaluations are reserved within the 3.25-hour total cap. Every GPU child enforces both wall time and calendar deadline. A host-level lock and GPU-idle checks prevent a second worker from sharing the device accidentally.
+Defaults retain 2,048 worlds and batch size 2,048, 5M GPU replay, JAX memory fraction 0.60, a 23,000 MiB device-memory guard, and a three-hour training cap. Earlier experiment commits used 4M replay. Three bounded evaluations are reserved within the 3.25-hour total cap. Every GPU child enforces both wall time and calendar deadline. A host-level lock and GPU-idle checks prevent a second worker from sharing the device accidentally.
 
 ## Batch and teammate shards
 

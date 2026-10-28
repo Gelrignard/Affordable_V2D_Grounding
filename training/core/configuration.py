@@ -61,11 +61,14 @@ def refinement_curriculum(objective, start, end, phase, ramp_transitions=10_000_
 
 
 def build_config(saved, *, state, output, start, end, phase, checkpoint_interval,
-                 acquisition_guidance=None, acquisition_reference=None):
+                 acquisition_guidance=None, acquisition_reference=None,
+                 placement_guidance=None, placement_reference=None, placement_support=None):
     """Preserve saved network, observation, action, source and simulator contracts."""
     cfg = normalize_checkpoint_config(saved)
     if acquisition_guidance not in (None, "precision", "grasp-region"):
         raise ValueError("Unknown acquisition guidance method")
+    if placement_guidance not in (None, "off", "supported-release"):
+        raise ValueError("Unknown placement guidance method")
     if int(cfg["scene"]["world_count"]) != WORLDS:
         raise ValueError("Native compact warm start requires a 2048-world source checkpoint")
     objective = copy.deepcopy(cfg["env"]["objective"])
@@ -94,6 +97,24 @@ def build_config(saved, *, state, output, start, end, phase, checkpoint_interval
             raise ValueError("Acquisition reference changed since the saved checkpoint")
         objective.update(acquisition_reference_path=str(Path(reference).resolve()),
                          acquisition_reference_sha256=reference_sha)
+    if placement_guidance == "supported-release":
+        objective["placement_enabled"] = True
+    elif placement_guidance == "off" and "placement_enabled" in objective:
+        objective["placement_enabled"] = False
+    if objective.get("placement_enabled", False):
+        if objective.get("acquisition_enabled", False):
+            raise ValueError("Supported release must be evaluated with precision acquisition")
+        for name, supplied in (("reference", placement_reference), ("support", placement_support)):
+            source = supplied or objective.get(f"placement_{name}_path")
+            if not source or not Path(source).is_file():
+                raise ValueError(f"Supported release requires its input {name} file")
+            with Path(source).open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            previous_digest = objective.get(f"placement_{name}_sha256")
+            if previous_digest and previous_digest != digest:
+                raise ValueError(f"Placement {name} changed since the saved checkpoint")
+            objective[f"placement_{name}_path"] = str(Path(source).resolve())
+            objective[f"placement_{name}_sha256"] = digest
     termination = copy.deepcopy(cfg["env"]["termination"])
     termination.update({"_target_": "training.core.refinement.RefinementTerminationConfig",
                         "palm_position_threshold": 0.25, "palm_orientation_threshold": 2.2,
@@ -138,6 +159,10 @@ def build_config(saved, *, state, output, start, end, phase, checkpoint_interval
     if objective.get("acquisition_enabled", False):
         cfg["refinement"]["method"] = "object_attached_acquisition_region_v1"
         cfg["refinement"]["acquisition_reference_sha256"] = objective["acquisition_reference_sha256"]
+    if objective.get("placement_enabled", False):
+        cfg["refinement"]["method"] = "supported_placement_release_v1"
+        cfg["refinement"]["placement_reference_sha256"] = objective["placement_reference_sha256"]
+        cfg["refinement"]["placement_support_sha256"] = objective["placement_support_sha256"]
     cfg["curriculum"] = curriculum
     training = cfg["training"]
     training.update(world_count=WORLDS, total_environment_steps=end, resume=True,

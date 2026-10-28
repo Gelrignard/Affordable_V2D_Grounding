@@ -289,6 +289,11 @@ class RefinementObjectiveConfig(_NativeObjectiveConfig):
     acquisition_contact_distance: float = 0.03
     acquisition_min_palm_clearance: float = 0.015
     acquisition_max_seed_spread: float = 0.04
+    placement_enabled: bool = False
+    placement_reference_path: str | None = None
+    placement_reference_sha256: str | None = None
+    placement_support_path: str | None = None
+    placement_support_sha256: str | None = None
 
     def __post_init__(self):
         _require_runtime()
@@ -322,6 +327,13 @@ class RefinementObjectiveConfig(_NativeObjectiveConfig):
                 self.acquisition_min_palm_clearance, self.acquisition_max_seed_spread,
             )):
                 raise ValueError("acquisition geometry tolerances must be positive and finite")
+        if self.placement_enabled:
+            if self.acquisition_enabled:
+                raise ValueError("placement and acquisition are separate experimental variants")
+            for kind in ("reference", "support"):
+                path, digest = getattr(self, "placement_" + kind + "_path"), getattr(self, "placement_" + kind + "_sha256")
+                if not path or not digest or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+                    raise ValueError("enabled placement requires input/support paths and SHA256")
 
     def build(self, *args, **kwargs):
         table = None
@@ -331,7 +343,14 @@ class RefinementObjectiveConfig(_NativeObjectiveConfig):
             table = table_from_native(bound.arguments["reference"], bound.arguments["robot_reference"], self)
             if table.audit["active_windows"] == 0:
                 raise ValueError("acquisition has no valid windows: " + json.dumps(table.audit, sort_keys=True))
-        return RefinementObjective(super().build(*args, **kwargs), self, acquisition_table=table)
+        result = RefinementObjective(super().build(*args, **kwargs), self, acquisition_table=table)
+        if self.placement_enabled:
+            from training.core.placement import PlacementRuntime
+            bound = inspect.signature(_NativeObjectiveConfig.build).bind(self, *args, **kwargs)
+            result._placement = PlacementRuntime(result.native, bound.arguments["model"], self, bound.arguments["reference"])
+            result.placement_audit = result._placement.audit
+            result.placement_diagnostics = result._placement.diagnostics
+        return result
 
 
 class RefinementObjective:
@@ -347,6 +366,9 @@ class RefinementObjective:
         self.contact_blend = wp.array(smooth_contact_blend(labels, config.contact_blend_frames).reshape(-1), dtype=wp.float32, device=device)
         self.acquisition_audit = None
         self._acquisition_arrays = None
+        self._placement = None
+        self.placement_audit = None
+        self.placement_diagnostics = {}
         if getattr(config, "acquisition_enabled", False):
             if acquisition_table is None or acquisition_table.audit["active_windows"] == 0:
                 raise ValueError("enabled acquisition requires at least one validated window")
@@ -415,6 +437,8 @@ class RefinementObjective:
                 n.bodies_per_world, n.object_body_id, int(c.use_object_relative_hands),
                 c.hand_position_tolerance, c.palm_position_std, c.relative_hand_position_std, n.frame_dt,
             ], outputs=[self.terms, self.score], device=n.terms.device)
+        if self._placement is not None:
+            self._placement.evaluate(self, state, timestep)
 
 
 @dataclass(frozen=True)

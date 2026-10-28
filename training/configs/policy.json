@@ -1,6 +1,6 @@
 {
   "worlds": 2048,
-  "replay_capacity": 4000000,
+  "replay_capacity": 5000000,
   "optimizer_horizon": 683592,
   "bootstrap_steps": 349999104,
   "refinement_steps": 90000000,

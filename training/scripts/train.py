@@ -1,4 +1,4 @@
-"""Native FlashSAC bootstrap or candidate2 refinement with fresh 4M GPU replay.
+"""Native FlashSAC bootstrap or precision refinement with fresh GPU replay.
 
 Training and evaluation are separate processes. This command never evaluates a
 checkpoint while its training allocation is resident. The outer policy
@@ -65,6 +65,8 @@ def source_config(args, output):
     """Resolve a fresh native configuration or the existing exact warm-start path."""
     fresh = getattr(args, "fresh_config", None)
     if fresh:
+        if getattr(args, "placement_guidance", None) == "supported-release":
+            raise ValueError("Supported-release guidance applies only to refinement")
         if getattr(args, "acquisition_guidance", None) == "grasp-region":
             raise ValueError("Acquisition-region guidance applies only to refinement")
         if args.phase != "refine":
@@ -82,7 +84,10 @@ def source_config(args, output):
     cfg = build_config(saved, state=state, output=output, start=start, end=end,
                        phase=args.phase, checkpoint_interval=args.checkpoint_interval,
                        acquisition_guidance=getattr(args, "acquisition_guidance", None),
-                       acquisition_reference=getattr(args, "acquisition_reference", None))
+                       acquisition_reference=getattr(args, "acquisition_reference", None),
+                       placement_guidance=getattr(args, "placement_guidance", None),
+                       placement_reference=getattr(args, "placement_reference", None),
+                       placement_support=getattr(args, "placement_support", None))
     return cfg, saved, state, policy, start, end, additional
 
 
@@ -319,6 +324,10 @@ def run_child(args):
         if audit is not None:
             write_json(output / "acquisition_guidance.json", audit)
             kwargs["checkpoint_metadata"]["acquisition_table_sha256"] = audit["table_sha256"]
+        placement = getattr(env.env.objective, "placement_audit", None)
+        if placement is not None:
+            write_json(output / "placement_guidance.json", placement)
+            kwargs["checkpoint_metadata"]["placement_table_sha256"] = placement["table_sha256"]
         memory_snapshot("scene_ready")
         return original_run(env, config, **kwargs)
 
@@ -523,6 +532,10 @@ def main():
     parser.add_argument("--acquisition-guidance", choices=("precision", "grasp-region"),
                         help="Refinement objective; omitted continuations retain the saved setting")
     parser.add_argument("--acquisition-reference", help="The same portable input job's reference.npz")
+    parser.add_argument("--placement-guidance", choices=("off", "supported-release"),
+                        help="Opt-in support-aware placement and release; omitted retains saved setting")
+    parser.add_argument("--placement-reference", help="The same portable job's reference.npz")
+    parser.add_argument("--placement-support", help="The same portable job's assets/support.usda")
     parser.add_argument("--additional-transitions", type=int, default=60_000_000)
     parser.add_argument("--max-seconds", type=int, default=1800)
     parser.add_argument("--deadline-utc", required=True)

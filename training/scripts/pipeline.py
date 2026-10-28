@@ -39,7 +39,7 @@ from training.scripts.train import (
     checkpoint_pair, transition_budget,
 )
 from training.core.checkpoints import completed_checkpoint, evaluation_scores
-from training.core.configuration import DEFAULTS
+from training.core.configuration import DEFAULTS, REPLAY_CAPACITY
 from training import RUNTIME_COMMIT
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -260,7 +260,7 @@ def prepare(request):
     cfg = resolved_dict(compose_config("train_flash_sac", [
         "experiment=g1_recon_body_flash_sac", f"embodiment.config.asset_sha256={sha(urdf)}",
         f"task.parquet={json.dumps(str(motion))}", f"scene.support={str(has_support).lower()}",
-        "scene.world_count=2048", "training.replay.batch_size=2048", "training.replay.capacity=4000000",
+        "scene.world_count=2048", "training.replay.batch_size=2048", f"training.replay.capacity={REPLAY_CAPACITY}",
         f"training.optimization.learning_rate_schedule_updates={OPTIMIZER_HORIZON}",
         "logging.mode=offline", "logging.log_interval=25", "logging.upload_checkpoints=false",
         "logging.upload_training_state=false"]))
@@ -290,6 +290,27 @@ def prepare(request):
         immutable_json(preview_path, preview)
         immutable_json(audit_path, preflight_acquisition_config(preview))
         record["acquisition_preflight"] = {
+            "config": str(preview_path), "config_sha256": sha(preview_path),
+            "audit": str(audit_path), "audit_sha256": sha(audit_path)}
+    if request.get("placement_guidance") == "supported-release":
+        from training.core.placement import preflight_placement_config
+        if request.get("acquisition_guidance", "precision") != "precision":
+            raise ValueError("Supported release requires precision acquisition")
+        if job["manifest"]["tier"] == 1:
+            raise ValueError("Supported-release guidance is opt-in for Tier 2/3 only")
+        start = parent["environment_steps"] if parent else BOOTSTRAP_STEPS
+        preview = build_config(parent["resolved_config"] if parent else cfg,
+                               state=Path(parent["state"]) if parent else prepared / "future_state.safetensors",
+                               output=output / "refinement", start=start, end=start + REFINEMENT_STEPS,
+                               phase="refine", checkpoint_interval=CHECKPOINT_INTERVAL,
+                               acquisition_guidance="precision", placement_guidance="supported-release",
+                               placement_reference=Path(job["job"]) / "reference.npz",
+                               placement_support=Path(job["job"]) / "assets/support.usda")
+        preview_path = prepared / "placement_config.json"
+        audit_path = prepared / "placement_guidance.json"
+        immutable_json(preview_path, preview)
+        immutable_json(audit_path, preflight_placement_config(preview))
+        record["placement_preflight"] = {
             "config": str(preview_path), "config_sha256": sha(preview_path),
             "audit": str(audit_path), "audit_sha256": sha(audit_path)}
     immutable_json(output / "preparation.json", record)
@@ -406,6 +427,13 @@ def reverify(request, preparation):
         for key in ("config", "audit"):
             if sha(acquisition[key]) != acquisition[key + "_sha256"]:
                 raise ValueError("Acquisition preflight changed")
+    placement = preparation.get("placement_preflight")
+    if request.get("placement_guidance") == "supported-release" and not placement:
+        raise ValueError("Placement support was not verified before training")
+    if placement:
+        for key in ("config", "audit"):
+            if sha(placement[key]) != placement[key + "_sha256"]:
+                raise ValueError("Placement preflight changed")
     export_inputs = preparation.get("export_inputs")
     if request["dataset_input"] and not export_inputs:
         raise ValueError("Export inputs were not verified before training")
@@ -449,8 +477,12 @@ def train_stage(request, preparation, candidate, stage, config, *, parent=None):
                    str(50_000_000 if parent is None else CHECKPOINT_INTERVAL)]
         if parent is not None:
             command.extend(["--acquisition-guidance", request.get("acquisition_guidance", "precision")])
+            command.extend(["--placement-guidance", request.get("placement_guidance", "off")])
             if request.get("acquisition_guidance") == "grasp-region":
                 command.extend(["--acquisition-reference", str(Path(request["job"]) / "reference.npz")])
+            if request.get("placement_guidance") == "supported-release":
+                command.extend(["--placement-reference", str(Path(request["job"]) / "reference.npz"),
+                                "--placement-support", str(Path(request["job"]) / "assets/support.usda")])
         immutable_json(output / (stage + "_manifest.json"), {"source": request["source"], "job": preparation["job"],
                        "planned_config_sha256": sha(planned), "parent": parent, "child_seconds": child, "outer_seconds": outer})
         run_guard(request, candidate, stage, "training", outer, command)
@@ -621,6 +653,8 @@ def run(args):
                    "candidate_boundary_tolerance_transitions": WORLDS}
             if getattr(args, "acquisition_guidance", "precision") != "precision":
                 request["acquisition_guidance"] = args.acquisition_guidance
+            if getattr(args, "placement_guidance", "off") != "off":
+                request["placement_guidance"] = args.placement_guidance
             policy = guard.make_budget_policy(args.total_budget_seconds, args.training_budget_seconds, 1)
             immutable_json(output / "request.json", request)
             stage = "prepare"
@@ -670,7 +704,10 @@ def run(args):
                 config = build_config(json.loads(metadata["resolved_config_json"]), state=Path(parent["state"]),
                                       output=output / stage, start=start, end=end, phase="refine", checkpoint_interval=CHECKPOINT_INTERVAL,
                                       acquisition_guidance=request.get("acquisition_guidance", "precision"),
-                                      acquisition_reference=str(Path(request["job"]) / "reference.npz"))
+                                      acquisition_reference=str(Path(request["job"]) / "reference.npz"),
+                                      placement_guidance=request.get("placement_guidance", "off"),
+                                      placement_reference=str(Path(request["job"]) / "reference.npz"),
+                                      placement_support=str(Path(request["job"]) / "assets/support.usda"))
                 final = train_stage(request, preparation, candidate, stage, config, parent=parent)
                 stage = "checkpoint_selection"
                 write_progress(output, stage)
@@ -710,6 +747,8 @@ def main(argv=None):
     parser.add_argument("--parent-state")
     parser.add_argument("--acquisition-guidance", choices=("precision", "grasp-region"), default="precision",
                         help="Opt-in object-attached acquisition regions for Tier 2/3")
+    parser.add_argument("--placement-guidance", choices=("off", "supported-release"), default="off",
+                        help="Opt-in support-aware placement and release for Tier 2/3")
     parser.add_argument("--training-budget-seconds", type=float, default=DEFAULTS["training_budget_seconds"])
     parser.add_argument("--total-budget-seconds", type=float, default=DEFAULTS["total_budget_seconds"])
     parser.add_argument("--deadline-utc")

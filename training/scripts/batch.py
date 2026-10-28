@@ -65,6 +65,9 @@ def make_plan(args):
     guidance = getattr(args, "acquisition_guidance", "precision")
     if guidance == "grasp-region" and any(job["tier"] == 1 for job in selected):
         raise ValueError("Use a separate Tier 2/3 shard for grasp-region guidance")
+    placement = getattr(args, "placement_guidance", "off")
+    if placement != "off" and (guidance != "precision" or any(job["tier"] == 1 for job in selected)):
+        raise ValueError("Supported release requires a separate Tier 2/3 precision shard")
     root = Path(args.output).resolve()
     for job in selected:
         job["output"] = str(root / f"tier{job['tier']}" / f"episode_{job['episode_index']:06d}")
@@ -83,6 +86,8 @@ def make_plan(args):
             "selection": "sorted(tier, episode), then index modulo shard_count", "jobs": selected}
     if guidance != "precision":
         plan["acquisition_guidance"] = guidance
+    if placement != "off":
+        plan["placement_guidance"] = placement
     return plan
 
 
@@ -109,6 +114,8 @@ def episode_command(plan, job, deadline):
         command.extend(["--dataset-input", job["dataset_input"], "--submission-kit", plan["submission_kit"]])
     if plan.get("acquisition_guidance", "precision") != "precision":
         command.extend(["--acquisition-guidance", plan["acquisition_guidance"]])
+    if plan.get("placement_guidance", "off") != "off":
+        command.extend(["--placement-guidance", plan["placement_guidance"]])
     return command
 
 
@@ -202,6 +209,8 @@ def parser():
     p.add_argument("--submission-kit")
     p.add_argument("--acquisition-guidance", choices=("precision", "grasp-region"), default="precision",
                    help="Opt-in acquisition guidance for Tier 2/3 shards")
+    p.add_argument("--placement-guidance", choices=("off", "supported-release"), default="off",
+                   help="Opt-in support-aware release for Tier 2/3 shards")
     p.add_argument("--dry-run", action="store_true", help="Print the complete deterministic roster without writing or training")
     return p
 

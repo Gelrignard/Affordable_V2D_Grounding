@@ -191,12 +191,14 @@ class Trace:
         self.stride = max(stride, math.ceil(max(1, steps - 1) / (max_samples - 1)))
         self.data = {}
         self.index = 0
+        self.placement_diagnostics = getattr(env.objective, "placement_diagnostics", {})
         native = env.objective
         while hasattr(native, "native"):
             native = native.native
         self.native = native
         self.available = {"palms": hasattr(native, "wrist_frames"), "contact_forces": env.contact is not None,
-                          "raw_policy_actions": hasattr(env.action, "raw_action")}
+                          "raw_policy_actions": hasattr(env.action, "raw_action"),
+                          "placement_support": bool(self.placement_diagnostics)}
         self.palm_cache = None
         if self.available["palms"]:
             mapping = native.wrist_frames
@@ -238,6 +240,8 @@ class Trace:
             slots = np.asarray(contact.layout.slot_hand_ids)
             force = contact.contact_force_w.numpy().reshape(env.world_count, -1, 3)
             active = contact.contact_active.numpy().reshape(env.world_count, -1)
+            self.append("contact_slot_force_w_n", force)
+            self.append("contact_slot_active", active)
             self.append("hand_contact_force_sum_norm_n", np.stack([
                 np.linalg.norm(force[:, slots == hand], axis=-1).sum(axis=-1)
                 for hand in range(contact.layout.num_hands)], axis=-1))
@@ -246,6 +250,8 @@ class Trace:
                 for hand in range(contact.layout.num_hands)], axis=-1))
         if self.available["raw_policy_actions"]:
             self.append("policy_action", env.action.raw_action.numpy().reshape(env.world_count, -1))
+        for name, values in self.placement_diagnostics.items():
+            self.append(name, values.numpy())
 
     def write(self, out, network):
         arrays = {name: np.asarray(values) for name, values in self.data.items()}
@@ -258,6 +264,16 @@ class Trace:
             "actuator_torque_clamp_fraction": None,
             "clamp_note": "Actuator saturation is not directly recorded; action magnitudes are not mislabeled as torque clipping.",
         }
+        if self.env.contact is not None:
+            layout = self.env.contact.layout
+            summary["contact_slot_mapping"] = {
+                "hand_ids": list(layout.slot_hand_ids), "object_ids": list(layout.slot_object_ids),
+                "hand_slot_starts": list(layout.hand_slot_starts), "link_counts": list(layout.link_counts),
+                "ordering": "hand, then object, then native hand contact link; includes palm and finger links",
+            }
+        if self.placement_diagnostics:
+            summary["placement_support_semantics"] = "actual object-designated-support force on object; solved last physics substep; reward ignored by evaluation actor"
+            summary["placement_audit"] = self.env.objective.placement_audit
         actions = arrays.get("policy_action")
         if actions is not None and np.isfinite(actions).all():
             scale = float(network.get("action_scale", 1.0))

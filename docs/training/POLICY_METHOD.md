@@ -12,7 +12,7 @@ policy. It is not one policy trained to solve every episode.
 | Learner | Native FlashSAC, native actor/critic, optimizer, observation/action interface | Preserved |
 | Controller and physics | Frozen SONIC, G1/Dex3, Newton/Warp contact dynamics | Preserved |
 | Parallelism | 2,048 worlds, batch 2,048 | Same 2,048/2,048 |
-| Replay | 10M GPU transitions | 4M GPU transitions, native storage/sampling/update semantics |
+| Replay | 10M GPU transitions | 5M GPU transitions, native storage/sampling/update semantics |
 | Initial learning | Native 349,999,104-transition assistance curriculum | Same initial learning; no separate baseline run in production |
 | Object position reward | Broad exponential with 0.20 m scale, weight 1 | Broad/fine mixture, final weight 3 |
 | Object orientation | Used in termination; no explicit orientation tracking reward term | Adds orientation reward, final weight 2, 0.6 rad scale |
@@ -21,12 +21,14 @@ policy. It is not one policy trained to solve every episode.
 | Tracking termination | Immediate palm/object threshold crossing | Brief recovery window plus gross-failure limits; pelvis checks preserved |
 | Evaluation | Separate rollout/evaluation path | Exact frame 0, zero global/reset assistance, no settling or within-attempt reset, training tracking termination disabled |
 
-The 4090 memory adaptation primarily reduces replay capacity from 10M to 4M,
+The current branch reduces replay capacity from 10M to 5M,
 disables JAX preallocation, uses memory fraction 0.60, and monitors total device
 memory against 23,000 MiB. Batch size and world count remain 2,048, matching this
 pinned native recipe. The replay capacity reduction preserves the native batch size and world count.
 Actual memory use, throughput and convergence depend on the episode and GPU;
 the pipeline records these values and enforces its configured bounds.
+Earlier precision and acquisition trials used 4M replay. A new 5M run therefore
+changes replay capacity as well as any explicitly enabled objective variant.
 
 ## Why the hand change matters
 
@@ -110,6 +112,31 @@ This is an experimental, opt-in Tier 2/3 variant inspired by separating grasp
 acquisition from demonstration tracking. It is not a DexMachina reproduction
 and does not change to PPO. The default precision profile, including Tier 1,
 retains the previous objective and execution path.
+
+## Optional supported placement and release
+
+`--placement-guidance supported-release` keeps the precision approach, grasp and
+transport objective. It detects a final reference contact ending near a nearly
+stationary, geometrically supported object target. CPU preflight checks the input
+mesh, inertial center of mass and the native support transform. It retains both
+object and hand targets and rejects incompatible windows. The current runtime
+adapter requires one unscaled object and one axis-aligned cylindrical support.
+
+Within the accepted window, a bounded bonus rewards actual object-support load,
+low object velocity and a pose near the placement target. The bonus also favors
+removing hand load after support is established. While the object lacks stable
+support, only the withdrawing hand's tracking cost is softened, to no less than
+20% of its original value. That relief ends with the window; time continues and
+full hand tracking returns. This does not add virtual support forces, freeze
+the motion clock or modify the physics, controller or policy interface.
+
+The changes remain in the native 13 raw reward terms before n-step aggregation,
+so replay contains the executed shaping. Evaluation records support force and
+individual hand-link contact slots; its actor does not use the reward. The
+input reference/support sidecars and their hashes must accompany the checkpoint
+when this diagnostic objective is constructed. The variant is opt-in for Tier
+2/3 and cannot be combined with `grasp-region`. Geometry checks are not a
+dynamic-feasibility certificate; full unassisted rollouts determine its outcome.
 
 ## Method sources and scope
 

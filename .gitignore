@@ -16,6 +16,8 @@ venv/
 *.pem
 *.key
 
+v2d_submission_kit/
+
 # Datasets and generated artifacts.
 outputs/
 data/

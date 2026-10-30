@@ -5,9 +5,9 @@
   "bootstrap_steps": 349999104,
   "refinement_steps": 90000000,
   "checkpoint_interval": 10000000,
-  "evaluation_seconds": 300,
-  "evaluator_child_seconds": 240,
+  "evaluation_seconds": null,
+  "evaluator_child_seconds": null,
   "supervision_reserve": 60,
-  "training_budget_seconds": 10800,
-  "total_budget_seconds": 11700
+  "training_budget_seconds": null,
+  "total_budget_seconds": null
 }

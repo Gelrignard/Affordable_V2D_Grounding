@@ -26,7 +26,7 @@ def validate_portable_input(path):
     data = json.loads((root / "job.json").read_text(encoding="utf-8"))
     if (data.get("schema") != "v2d_policy_job_v1" or data.get("obsolete")
             or type(data.get("tier")) is not int or data["tier"] not in (1, 2, 3)
-            or type(data.get("episode_index")) is not int or not 0 <= data["episode_index"] < 30
+            or type(data.get("episode_index")) is not int or data["episode_index"] < 0
             or data.get("variant") not in ("corrected", "original")
             or data.get("runtime_commit") != RUNTIME_COMMIT
             or data.get("model_scope") != "single_rigid_object_g1_dex3"):
@@ -45,8 +45,31 @@ def validate_portable_input(path):
             or not math.isfinite(data["source_fps"]) or data["source_fps"] <= 0):
         raise ValueError(f"Invalid portable trajectory length/rate: {root}")
     from .bundles import arrays, validate_reference
+    from .input_repair import repair_reference, merge_portable_counterparts, UnusableReference
     reference = arrays(root / "reference.npz")
-    validate_reference(reference)
+    import numpy as np
+    counterpart_frames = {}
+    fields = ('joint_positions', 'joint_velocity', 'root_position', 'root_wxyz',
+              'object_position', 'object_wxyz', 'ee_pose_w')
+    missing = any(not np.isfinite(reference[key]).all() for key in fields if key in reference)
+    missing |= any((np.linalg.norm(reference[key], axis=-1) < 1e-12).any()
+                   for key in ('root_wxyz', 'object_wxyz'))
+    if missing:
+        import pyarrow.parquet as pq
+        rows = pq.ParquetFile(root / 'motion.parquet').read().to_pylist()
+        if len(rows) != 1:
+            raise ValueError('Portable counterpart motion must contain one episode')
+        reference, _, counterpart_frames = merge_portable_counterparts(reference, rows[0])
+    reference, repairs = repair_reference(reference)
+    if counterpart_frames:
+        repairs = {**(repairs or {}), **{key: sorted(set(frames) | set((repairs or {}).get(key, [])))
+                                        for key, frames in counterpart_frames.items()}}
+    try:
+        validate_reference(reference)
+    except ValueError as exc:
+        raise UnusableReference(str(exc)) from exc
+    if repairs:
+        data = {**data, 'input_repairs': repairs}
     if len(reference["timestamps"]) != data["source_frames"]:
         raise ValueError(f"Portable reference frame count differs: {root}")
     return data
@@ -69,6 +92,8 @@ def input_selection_record(path):
         else:
             contact_frames, contact_state = 0, "not_provided"
     warnings = []
+    if data.get('input_repairs'):
+        warnings.append('missing_source_samples')
     if data["variant"] == "original":
         warnings.append("original_reference")
     if not contact_frames:
@@ -87,6 +112,7 @@ def input_selection_record(path):
             "source_sha256": data.get("source_sha256"),
             "contact_reference": contact_state, "contact_frames": contact_frames,
             "source_frames": data["source_frames"], "warnings": warnings,
+            "input_repairs": data.get('input_repairs'),
             "selection_reason": "produced_corrected_reference" if data["variant"] == "corrected"
                                 else "original_reference_selected"}
 
@@ -98,12 +124,19 @@ def select_portable_input(path):
     prefers corrected even without contacts or physical/planning acceptance.
     """
     root = Path(path).resolve()
+    from .input_repair import UnusableReference
     if (root / "job.json").is_file():
         return input_selection_record(root)
     for variant in ("corrected", "original"):
         candidate = root / variant
         if (candidate / "job.json").is_file():
-            record = input_selection_record(candidate)
+            try:
+                record = input_selection_record(candidate)
+            except UnusableReference as exc:
+                if variant != 'corrected' or not (root / 'original/job.json').is_file():
+                    raise
+                print(f'WARNING: corrected reference is unusable ({exc}); checking original trajectory.', file=sys.stderr)
+                continue
             if record["variant"] != variant:
                 raise ValueError(f"Portable variant directory/metadata mismatch: {candidate}")
             if variant == "original":
@@ -132,12 +165,21 @@ def select_bundle_variant(path, tier, episode):
     available = manifest.get("corrected_reference_available")
     if type(available) is not bool:
         raise ValueError("Bundle must declare corrected_reference_available")
-    if manifest.get("status") == "failed":
-        raise ValueError("Correction stage failed; automatic selection does not mask stage errors")
     variant = "corrected" if available else "original"
     # This validates the complete hash chain and finite reference arrays. In
     # particular, a missing/corrupt declared correction is not a fallback case.
-    EpisodeBundle.load(root, tier, episode, variant)
+    from .input_repair import UnusableReference
+    try:
+        EpisodeBundle.load(root, tier, episode, variant)
+    except UnusableReference as exc:
+        if variant != 'corrected':
+            raise
+        EpisodeBundle.load(root, tier, episode, 'original')
+        print(f'WARNING tier{tier}/episode_{episode:06d}: corrected reference is unusable ({exc}); using original.', file=sys.stderr)
+        variant = 'original'
+    if manifest.get("status") == "failed":
+        print(f"WARNING tier{tier}/episode_{episode:06d}: correction reported failure; "
+              f"using its validated {variant} trajectory.", file=sys.stderr)
     return variant
 
 
@@ -152,6 +194,8 @@ def warn_input_selection(record, stream=None):
                           record["selection_reason"] == "corrected_unavailable_using_original" else ""))
     if "no_contact_reference" in record["warnings"]:
         details.append("no active contact reference; using the available trajectory")
+    if 'missing_source_samples' in record['warnings']:
+        details.append('missing source samples require recorded interpolation before training')
     if "diagnostic_correction_candidate" in record["warnings"]:
         details.append("using the produced diagnostic correction candidate; physical/planning acceptance is not established")
     elif "physical_acceptance_false" in record["warnings"]:

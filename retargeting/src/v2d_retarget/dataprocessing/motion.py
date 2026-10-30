@@ -1,14 +1,16 @@
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import numpy as np
+import warnings
+from .completion import fill_missing
 
 
 @dataclass
 class HumanMotion:
     """Metres, seconds, Z-up world; joint rotations are WORLD wxyz quaternions.
 
-    The current contact solver supports one rigid object. Invalid observations
-    must be cleaned by an adapter; they are rejected rather than silently filled.
+    The current contact solver supports one rigid object. Missing observations
+    are completed on their own timeline and recorded; finite samples are retained.
     """
 
     joint_names: tuple[str, ...]
@@ -35,13 +37,29 @@ class HumanMotion:
             raise ValueError("Need frames and unique joint names")
         for name, shape in shapes.items():
             a = np.asarray(getattr(self, name), dtype=np.float64)
-            if a.shape != shape or not np.isfinite(a).all():
+            if a.shape != shape:
                 raise ValueError(
                     f"Invalid {name}; expected finite {shape}, got {a.shape}"
                 )
             setattr(self, name, a)
-        if n > 1 and np.any(np.diff(self.timestamps) <= 0):
+        if not np.isfinite(self.timestamps).all() or (n > 1 and np.any(np.diff(self.timestamps) <= 0)):
             raise ValueError("Timestamps must increase strictly")
+        repairs = {}
+        for name in ("positions", "rotations_wxyz", "object_positions", "object_wxyz"):
+            filled, observed = fill_missing(self.timestamps, getattr(self, name),
+                                            quaternion=name.endswith("wxyz"))
+            missing = np.flatnonzero(~observed.reshape(n, -1).all(axis=1))
+            if len(missing):
+                setattr(self, name, filled)
+                repairs[name] = missing.tolist()
+        if repairs:
+            self.metadata = {**self.metadata, "missing_source_samples": repairs}
+            object_missing = sorted(set(repairs.get("object_positions", [])) | set(repairs.get("object_wxyz", [])))
+            if object_missing:
+                observed = np.asarray(self.metadata.get("object_observed_mask", np.ones(n, bool)), dtype=bool).copy()
+                observed[object_missing] = False
+                self.metadata["object_observed_mask"] = observed.tolist()
+            warnings.warn(f"Filled missing source samples in {self.sequence_id}: {repairs}", RuntimeWarning)
         for name in ("rotations_wxyz", "object_wxyz"):
             a = getattr(self, name)
             norms = np.linalg.norm(a, axis=-1, keepdims=True)

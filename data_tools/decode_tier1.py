@@ -1,4 +1,4 @@
-"""Decode the real Tier 1 SOMA parameters to the retargeter's canonical NPZ.
+"""Decode released Tier 1/2 SOMA parameters to the retargeter's canonical NPZ.
 
 Run with .soma-env (Torch/SOMA), not the Pinocchio retargeting environment.
 """
@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import warnings
 from pathlib import Path
 from time import perf_counter
 
@@ -17,7 +18,7 @@ import torch
 from soma import SOMALayer
 
 from correction.src.dynamics.object_wrench import contiguous_runs
-from data_tools.observation_completion import complete_object_poses
+from data_tools.observation_completion import complete_object_poses, complete_samples
 
 
 def level_rotation(normal):
@@ -35,10 +36,10 @@ def decode(data, output, episode, assets, *, tier=1, all_frames=False):
     records = [json.loads(s) for s in (data / "meta/episodes_metadata.jsonl").read_text().splitlines()]
     metadata = next(item for item in records if item["episode_index"] == episode)
     source = data / f"data/chunk-000/episode_{episode:06d}.parquet"
-    table = pq.read_table(source)
+    table = pq.ParquetFile(source).read()
     manifest = json.loads((data / 'download_manifest.json').read_text())
-    if manifest['tier'] != tier or manifest['revision'] != '5f68335f3acc802033d1e80728c1633197521de8':
-        raise ValueError('Dataset tier/revision does not match requested decoding provenance')
+    if manifest['tier'] != tier:
+        raise ValueError('Dataset tier does not match requested decoding provenance')
     variant = (table.schema.metadata or {}).get(b'trajectory_variant', b'').decode()
     if tier == 2 and variant != 'tier_2_synthetic_noise':
         raise ValueError('Tier 2 must come from its own noised parquet, not clean Tier 1')
@@ -47,6 +48,23 @@ def decode(data, output, episode, assets, *, tier=1, all_frames=False):
     arrays = {key: np.asarray(table[key].to_pylist(), dtype=np.float32) for key in (
         "observation.human.pose", "observation.human.translation", "observation.human.identity_coeffs",
         "observation.human.scale_params", "observation.human.bone_length_flexibles", "observation.object.pose")}
+    times = np.asarray(table['timestamp'], dtype=float)
+    human_repairs = {}
+    for key in arrays:
+        if not key.startswith('observation.human.'):
+            continue
+        value = arrays[key]
+        if key == 'observation.human.pose':
+            repaired, valid = complete_samples(times, value.reshape(len(times), -1, 3), rotation='rotvec')
+            repaired = repaired.reshape(value.shape)
+        else:
+            repaired, valid = complete_samples(times, value)
+        missing = np.flatnonzero(~valid.reshape(len(times), -1).all(axis=1))
+        if len(missing):
+            arrays[key] = repaired
+            human_repairs[key] = missing.tolist()
+    if human_repairs:
+        warnings.warn(f'Filled missing same-tier human source samples: {human_repairs}', RuntimeWarning)
     visible = np.asarray(table["observation.object.visible"], dtype=bool)
     completed, observed = complete_object_poses(np.asarray(table['timestamp'], dtype=float),
                                                arrays['observation.object.pose'], visible)
@@ -58,7 +76,7 @@ def decode(data, output, episode, assets, *, tier=1, all_frames=False):
     shape_keys = ("observation.human.identity_coeffs", "observation.human.scale_params", "observation.human.bone_length_flexibles")
     for key in shape_keys[:2]:
         if not np.allclose(arrays[key], arrays[key][0], atol=1e-6, rtol=0):
-            raise ValueError(f"{key} varies; a changing-identity decode needs explicit handling")
+            warnings.warn(f'{key} varies; decoding the supplied parameters per frame', RuntimeWarning)
     print("Initializing the pinned SOMA/MHR model on CPU", flush=True)
     layer = SOMALayer(data_root=str(assets.resolve()), identity_model_type="mhr", device="cpu",
                       enable_procedural_transforms=False, correctives_model_path=None)
@@ -118,7 +136,8 @@ def decode(data, output, episode, assets, *, tier=1, all_frames=False):
               "object_observed_mask": observed[selected].tolist(),
               "object_visibility_mask": visible[selected].tolist(),
               "object_imputed_frames": np.flatnonzero(~observed[selected]).tolist(),
-              "observation_completion": 'Linear position/SLERP on same-tier visible observations; nearest endpoint hold; imputed frames have zero observation confidence',
+              "human_imputed_source_frames": human_repairs,
+              "observation_completion": 'Linear position/SLERP on same-tier visible observations; nearest endpoint hold; imputed object frames have zero observation confidence; human repairs are recorded separately',
               "trajectory_variant": variant,
               "object_motion_edited": bool(np.any(~observed[selected])), "elapsed_seconds": perf_counter()-started}
     output.parent.mkdir(parents=True, exist_ok=True)

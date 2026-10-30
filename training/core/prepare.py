@@ -16,6 +16,22 @@ from .bundles import EpisodeBundle, sha256
 from .kinematics import URDFKinematics
 
 
+def regenerate_repaired_fk(reference, repairs, kinematics):
+    """Keep derived end-effector poses consistent on repaired source frames."""
+    changed = sorted(set().union(*(repairs.get(key, []) for key in
+                     ('joint_positions', 'root_position', 'root_wxyz', 'ee_pose_w'))))
+    if not changed:
+        return reference, []
+    result = dict(reference)
+    result['ee_pose_w'] = reference['ee_pose_w'].copy()
+    result['ee_pose_w'][changed] = kinematics.poses(
+        reference['joint_positions'][changed], reference['root_position'][changed],
+        reference['root_wxyz'][changed], reference['joint_names'],
+        reference['ee_link_names'].tolist(),
+    )
+    return result, changed
+
+
 def prepare_episode(bundle_root, tier, episode, variant, urdf, output):
     bundle = EpisodeBundle.load(bundle_root, tier, episode, variant)
     ref, guide, manifest = bundle.reference, bundle.guidance, bundle.manifest
@@ -76,6 +92,9 @@ def prepare_episode(bundle_root, tier, episode, variant, urdf, output):
             "nonuniform input requires explicit resampling before motion_v1 export"
         )
     kin = URDFKinematics(urdf)
+    ref, regenerated_frames = regenerate_repaired_fk(
+        ref, manifest.get('input_repairs', {}), kin
+    )
     palms = [f"{side}_hand_palm_link" for side in ("left", "right")]
     poses = kin.poses(
         ref["joint_positions"],
@@ -204,6 +223,10 @@ def prepare_episode(bundle_root, tier, episode, variant, urdf, output):
             if p.is_file()
         },
     }
+    if manifest.get('input_repairs'):
+        job['input_repairs'] = manifest['input_repairs']
+    if regenerated_frames:
+        job['derived_fk_regenerated_frames'] = regenerated_frames
     (output / "job.json").write_text(json.dumps(job, indent=2) + "\n", encoding="utf-8")
     return job
 

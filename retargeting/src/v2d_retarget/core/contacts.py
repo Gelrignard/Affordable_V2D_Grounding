@@ -26,7 +26,7 @@ class ContactTargets:
 
 
 def latch_contacts(local_points, distances, nearest, normals, timestamps, cfg):
-    """Hysteresis in seconds; object-relative anchors remain fixed per episode.
+    """Hysteresis in seconds; anchors are fixed within each continuous contact.
 
     These are geometric contact hypotheses, not measured forces. Release is
     triggered by distance or excessive drift so sliding/regrasp can relatch.

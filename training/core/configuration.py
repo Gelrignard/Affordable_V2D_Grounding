@@ -40,12 +40,12 @@ def normalize_checkpoint_config(saved):
     return cfg
 
 
-def refinement_curriculum(objective, start, end, phase, ramp_transitions=10_000_000):
+def refinement_curriculum(objective, start, end, phase, ramp_transitions=10_000_000, worlds=WORLDS):
     weights = {name.removesuffix("_weight"): value for name, value in objective.items()
                if name.endswith("_weight")}
     weights["object_orientation"] = 0.0
     fractions = [1.0] if phase == "consolidate" else [i / 10 for i in range(11)]
-    interval = max(WORLDS, (ramp_transitions // 10 // WORLDS) * WORLDS)
+    interval = max(worlds, (ramp_transitions // 10 // worlds) * worlds)
     stages = []
     for fraction in fractions:
         stage_weights = {**weights, "object_position": 1.0 + 2.0 * fraction,
@@ -69,8 +69,11 @@ def build_config(saved, *, state, output, start, end, phase, checkpoint_interval
         raise ValueError("Unknown acquisition guidance method")
     if placement_guidance not in (None, "off", "supported-release"):
         raise ValueError("Unknown placement guidance method")
-    if int(cfg["scene"]["world_count"]) != WORLDS:
-        raise ValueError("Native compact warm start requires a 2048-world source checkpoint")
+    worlds = cfg["training"]["world_count"]
+    if type(worlds) is not int or worlds <= 0 or cfg["scene"]["world_count"] != worlds:
+        raise ValueError("Training and scene world counts must agree")
+    replay_capacity = cfg["training"]["replay"]["capacity"]
+    horizon = cfg["training"]["optimization"]["learning_rate_schedule_updates"]
     objective = copy.deepcopy(cfg["env"]["objective"])
     objective.update({"_target_": "training.core.refinement.RefinementObjectiveConfig",
                       "object_orientation_weight": 0.0 if phase == "refine" else 2.0,
@@ -139,22 +142,22 @@ def build_config(saved, *, state, output, start, end, phase, checkpoint_interval
         cfg["env"][name] = value
     cfg["env"]["voc_scale"] = 0.0
     cfg["voc_scale_override"] = 0.0
-    cfg["scene"]["world_count"] = WORLDS
+    cfg["scene"]["world_count"] = worlds
     prior = cfg.get("refinement", {})
     ramp_start = int(prior.get("refinement_start_steps", start))
     if ramp_start > start:
         raise ValueError("Refinement ramp origin is after the restored checkpoint")
     if prior.get("phase") == "consolidate" and phase == "refine":
         raise ValueError("Cannot restart refinement after exact-start consolidation")
-    curriculum = refinement_curriculum(objective, ramp_start, end, phase)
+    curriculum = refinement_curriculum(objective, ramp_start, end, phase, worlds=worlds)
     active_index = min(bisect.bisect_right(curriculum["thresholds"], start), len(curriculum["stages"]) - 1)
     for name, weight in curriculum["stages"][active_index]["objective_weights"].items():
         cfg["env"]["objective"][name + "_weight"] = weight
         cfg["objective"][name + "_weight"] = weight
     cfg["refinement"] = {"phase": phase, "refinement_start_steps": ramp_start,
                         "method": "candidate2_position_precision_mixture",
-                        "fresh_replay": True, "optimizer_horizon": OPTIMIZER_HORIZON,
-                        "replay_capacity": REPLAY_CAPACITY, "replay_backend": "gpu",
+                        "fresh_replay": True, "optimizer_horizon": horizon,
+                        "replay_capacity": replay_capacity, "replay_backend": "gpu",
                         "recovery_reset_assistance": phase == "refine"}
     if objective.get("acquisition_enabled", False):
         cfg["refinement"]["method"] = "object_attached_acquisition_region_v1"
@@ -165,12 +168,11 @@ def build_config(saved, *, state, output, start, end, phase, checkpoint_interval
         cfg["refinement"]["placement_support_sha256"] = objective["placement_support_sha256"]
     cfg["curriculum"] = curriculum
     training = cfg["training"]
-    training.update(world_count=WORLDS, total_environment_steps=end, resume=True,
+    training.update(world_count=worlds, total_environment_steps=end, resume=True,
                     checkpoint_path=str(state), curriculum=copy.deepcopy(curriculum))
-    training["replay"].update(capacity=REPLAY_CAPACITY, batch_size=WORLDS,
-                              clear_on_stage_change=False)
+    training["replay"].update(clear_on_stage_change=False)
     training.setdefault("exploration", {})["warmup_action"] = "policy"
-    training["optimization"]["learning_rate_schedule_updates"] = OPTIMIZER_HORIZON
+    training["optimization"]["learning_rate_schedule_updates"] = horizon
     training["checkpoint"].update(save_interval_environment_steps=checkpoint_interval,
                                   save_replay=False, load_replay_path=None,
                                   load_optimizer=True, load_reward_normalizer=True)
@@ -180,50 +182,69 @@ def build_config(saved, *, state, output, start, end, phase, checkpoint_interval
     return cfg
 
 
-def build_fresh_config(saved, *, output, end, checkpoint_interval):
-    """Bound a resolved native bootstrap without changing its method or curriculum."""
-    cfg = normalize_checkpoint_config(saved)
-    if not isinstance(cfg, dict):
-        raise ValueError("Fresh config must be a resolved JSON object")
-    training = cfg.get("training", {})
-    task = cfg.get("task", {})
-    if cfg.get("refinement") or "reference" in cfg:
-        raise ValueError("Fresh native config must not contain refinement or checkpoint reference state")
-    if training.get("resume") is not False or training.get("checkpoint_path") is not None:
-        raise ValueError("Fresh native config requires resume=false and checkpoint_path=null")
-    if training.get("checkpoint", {}).get("load_replay_path") is not None:
-        raise ValueError("Fresh native config cannot restore replay")
-    if cfg.get("scene", {}).get("world_count") != WORLDS or training.get("world_count") != WORLDS:
-        raise ValueError("Fresh native bootstrap requires 2048 scene and training worlds")
-    if training.get("seed") != 42 or cfg.get("env", {}).get("reset", {}).get("seed") != 42:
-        raise ValueError("Fresh native bootstrap requires the native seed 42")
+def validate_native_config(cfg):
+    """Validate compatible native structure without imposing one recipe's defaults."""
+    if not isinstance(cfg, dict) or cfg.get("refinement") or cfg.get("overnight"):
+        raise ValueError("Expected a resolved native acquisition configuration")
+    training, task = cfg.get("training", {}), cfg.get("task", {})
+    worlds = training.get("world_count")
+    if type(worlds) is not int or worlds <= 0 or cfg.get("scene", {}).get("world_count") != worlds:
+        raise ValueError("Native scene/training world counts must be positive and equal")
+    for name, value in (("replay capacity", training.get("replay", {}).get("capacity")),
+                        ("replay batch", training.get("replay", {}).get("batch_size")),
+                        ("optimizer horizon", training.get("optimization", {}).get("learning_rate_schedule_updates")),
+                        ("native target", training.get("total_environment_steps"))):
+        if type(value) is not int or value <= 0:
+            raise ValueError(f"Invalid {name}")
     if task.get("source_frame_playback") is not True or task.get("motion_start_frame") != 0 or task.get("motion_end_frame") != -1:
-        raise ValueError("Fresh native bootstrap requires the full source-frame sequence")
+        raise ValueError("Native pipeline requires the full source-frame sequence")
     parquet = task.get("parquet")
     if not isinstance(parquet, str) or not Path(parquet).is_absolute() or not Path(parquet).is_file():
-        raise ValueError("Fresh native task parquet must be an existing absolute path")
+        raise ValueError("Native task parquet must be an existing absolute path")
     if cfg.get("env", {}).get("objective", {}).get("_target_") != "flash_chord.objectives.recon_body.ReconBodyObjectiveConfig":
-        raise ValueError("Fresh bootstrap requires the native ReconBody objective")
+        raise ValueError("Native acquisition requires the ReconBody objective")
     curriculum = cfg.get("curriculum")
     if not isinstance(curriculum, dict) or training.get("curriculum") != curriculum:
-        raise ValueError("Fresh native curriculum must be resolved and identical in training")
-    thresholds = [35000320, 70000640, 104998912, 139999232, 174999552,
-                  209999872, 288749568, 306249728, 349999104]
-    stages = curriculum.get("stages", [])
-    if curriculum.get("thresholds") != thresholds or [stage.get("voc_scale") for stage in stages] != [1., .75, .5, .25, .1, .05, 0., 0., 0.]:
-        raise ValueError("Fresh bootstrap must retain the native 350M VOC curriculum")
-    if cfg.get("voc_scale_override") is not None:
-        raise ValueError("Fresh bootstrap must not override the native VOC curriculum")
-    if end <= 0 or end % WORLDS or end > thresholds[-1]:
-        raise ValueError("Fresh bootstrap transition cap must align with worlds and not exceed native 350M")
-    if training.get("optimization", {}).get("learning_rate_schedule_updates") != OPTIMIZER_HORIZON:
-        raise ValueError("Fresh bootstrap must retain the native 350M optimizer horizon")
+        raise ValueError("Native curriculum must be resolved and identical in training")
+    thresholds, stages = curriculum.get("thresholds", []), curriculum.get("stages", [])
+    if (not thresholds or len(thresholds) != len(stages)
+            or any(type(x) is not int or x <= 0 for x in thresholds)
+            or any(a >= b for a, b in zip(thresholds, thresholds[1:]))):
+        raise ValueError("Native curriculum needs ordered transition thresholds and matching stages")
+    return worlds
+
+
+def build_fresh_config(saved, *, output, end, checkpoint_interval):
+    """Fresh native initialization with configured method/curriculum preserved."""
+    cfg = normalize_checkpoint_config(saved)
+    worlds = validate_native_config(cfg)
+    training = cfg["training"]
+    if "reference" in cfg or training.get("resume") is not False or training.get("checkpoint_path") is not None:
+        raise ValueError("Fresh native config requires no checkpoint/reference state")
+    if training.get("checkpoint", {}).get("load_replay_path") is not None:
+        raise ValueError("Fresh native config cannot restore replay")
+    if end <= 0 or end % worlds or end > training["total_environment_steps"]:
+        raise ValueError("Fresh target must align with worlds and stay within its configured target")
     training.update(total_environment_steps=end, resume=False, checkpoint_path=None)
-    training["replay"].update(capacity=REPLAY_CAPACITY, batch_size=WORLDS)
     training["checkpoint"].update(save_interval_environment_steps=checkpoint_interval,
                                   save_replay=False, load_replay_path=None,
                                   load_optimizer=False, load_reward_normalizer=False)
     cfg["logging"].update(mode="offline", log_interval=25,
                           upload_checkpoints=False, upload_training_state=False)
+    cfg["output_dir"] = str(output / "checkpoints")
+    return cfg
+
+
+def build_native_resume_config(saved, *, state, output, start, end, checkpoint_interval):
+    """Restore saved native curriculum/optimizer clocks with fresh replay/simulator."""
+    cfg = copy.deepcopy(saved)
+    worlds = validate_native_config(cfg)
+    if not 0 < start < end <= cfg["training"]["total_environment_steps"] or start % worlds or end % worlds:
+        raise ValueError("Native resume requires a partial aligned checkpoint and its saved endpoint")
+    training = cfg["training"]
+    training.update(total_environment_steps=end, resume=True, checkpoint_path=str(state))
+    training["checkpoint"].update(save_interval_environment_steps=checkpoint_interval,
+                                  save_replay=False, load_replay_path=None,
+                                  load_optimizer=True, load_reward_normalizer=True)
     cfg["output_dir"] = str(output / "checkpoints")
     return cfg

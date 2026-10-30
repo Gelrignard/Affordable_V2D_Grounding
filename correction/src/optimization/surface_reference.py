@@ -133,7 +133,7 @@ def build_reference(scene, raw, points, grasp_q, forces_world, grasp_frame, *,
         targets = raw['object_positions'][frame]+Rotation.from_quat(raw['object_wxyz'][frame], scalar_first=True).apply(
             np.array([p.object_local for p in points]))
         gaps.append(np.linalg.norm(position-targets, axis=1))
-    report = dict(scope='one fixed contact strategy; other phases are unchanged unless explicitly composed',
+    report = dict(scope='local contact IK; movable joints are smoothed and interpolated across the full timeline; callers may compose only a selected interval',
         first_frame=first, last_frame=last, approach_start_frame=begin, approach_enabled=approach,
         rigid_grasp=rigid_grasp,
         release_enabled=release,release_end_frame=solve_end,

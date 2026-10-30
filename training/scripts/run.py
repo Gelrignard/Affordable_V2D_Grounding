@@ -30,20 +30,26 @@ def parser():
     source.add_argument("--jobs-root", help="Prepared job root; run a deterministic serial batch or shard")
     source.add_argument("--bundle", help="Correction bundle containing a validated available episode reference")
     p.add_argument("--tier", type=int, choices=(1, 2, 3), help="Required with --bundle")
-    p.add_argument("--episode", type=int, choices=range(30), help="Required with --bundle")
+    p.add_argument("--episode", type=int, help="Nonnegative episode ID; required with --bundle")
     p.add_argument("--urdf", help="Pinned G1/Dex3 URDF; required with --bundle")
-    for name in ("runtime", "output", "deadline-utc", "submission-kit"):
+    for name in ("runtime", "output", "submission-kit"):
         p.add_argument("--" + name, required=True)
+    p.add_argument("--deadline-utc", help="Optional calendar deadline")
     p.add_argument("--dataset-input", "--dataset-root", required=True, dest="dataset_input",
                    help="Released tier input directory for one job; root containing tier1/2/3 for a batch")
     p.add_argument("--parent-state", help="Compatible native learner state for this exact single episode; otherwise initialize natively")
+    p.add_argument("--native-resume", help="Partial native checkpoint, with --recovery-from")
+    p.add_argument("--recovery-from", help="Failed original pipeline output; retains its canonical charged ledger")
+    p.add_argument("--strict-reproducibility", action="store_true")
+    for name in ("native-max-seconds", "refinement-max-seconds", "evaluation-max-seconds"):
+        p.add_argument("--" + name, type=float, help="Optional stage wall-time limit")
     p.add_argument("--recipe", choices=("auto", "legacy", "tier1-precision", "tier23-load-transfer"), default="auto")
     p.add_argument("--selection-policy", choices=("auto", "success", "tracking"), default="auto")
-    p.add_argument("--training-budget-seconds", type=int, default=10800)
-    p.add_argument("--total-budget-seconds", "--episode-total-budget-seconds", type=int, default=11700, dest="total_budget_seconds")
-    p.add_argument("--gpu-hours", type=float, help="Required for --jobs-root; total charged GPU wall hours for the shard")
+    p.add_argument("--training-budget-seconds", type=float)
+    p.add_argument("--total-budget-seconds", "--episode-total-budget-seconds", type=float, dest="total_budget_seconds")
+    p.add_argument("--gpu-hours", type=float, help="Optional total charged GPU wall hours for the shard")
     p.add_argument("--tiers", type=int, choices=(1, 2, 3), nargs="+", help="Batch tier filter (default: all tiers)")
-    p.add_argument("--episodes", type=int, choices=range(30), nargs="+", help="Batch episode filter")
+    p.add_argument("--episodes", type=int, nargs="+", help="Batch nonnegative episode IDs")
     p.add_argument("--shard-index", type=int, default=0)
     p.add_argument("--shard-count", type=int, default=1)
     p.add_argument("--max-jobs", type=int)
@@ -55,9 +61,7 @@ def parser():
 
 def validate_arguments(args, p):
     if args.jobs_root:
-        if args.gpu_hours is None:
-            p.error("--jobs-root requires --gpu-hours")
-        if args.parent_state or args.tier is not None or args.episode is not None or args.urdf:
+        if args.parent_state or args.native_resume or args.recovery_from or args.tier is not None or args.episode is not None or args.urdf:
             p.error("--parent-state/--tier/--episode/--urdf apply only to a single episode")
         if args.prepare_only:
             p.error("Batch --dry-run validates the roster; use single-episode --prepare-only for native scene preflight")
@@ -70,6 +74,21 @@ def validate_arguments(args, p):
                 p.error("--bundle requires --tier, --episode and --urdf")
         elif args.tier is not None or args.episode is not None or args.urdf:
             p.error("--tier, --episode and --urdf are inferred from --job; supply them only with --bundle")
+    if args.episode is not None and args.episode < 0 or any(x < 0 for x in (args.episodes or [])):
+        p.error("Episode IDs must be nonnegative")
+    if bool(args.native_resume) != bool(args.recovery_from) or (args.native_resume and args.parent_state):
+        p.error("Native recovery requires --native-resume and --recovery-from, excluding --parent-state")
+
+
+def optional_limits(args):
+    command = []
+    for name in ("deadline_utc", "training_budget_seconds", "native_max_seconds", "refinement_max_seconds", "evaluation_max_seconds"):
+        value = getattr(args, name, None)
+        if value is not None:
+            command.extend(["--" + name.replace("_", "-"), str(value)])
+    if getattr(args, "strict_reproducibility", False):
+        command.append("--strict-reproducibility")
+    return command
 
 
 def prepare_bundle_job(args):
@@ -119,12 +138,17 @@ def single_command(args, selection):
         policy = "tracking" if recipe == "tier23-load-transfer" else "success"
     command = [sys.executable, "-m", "training.scripts.pipeline", "--job", selection["job"],
                "--runtime", str(Path(args.runtime).resolve()), "--output", str(Path(args.output).resolve()),
-               "--deadline-utc", args.deadline_utc, "--training-budget-seconds", str(args.training_budget_seconds),
-               "--total-budget-seconds", str(args.total_budget_seconds), "--recipe", recipe,
+               "--recipe", recipe,
                "--selection-policy", policy, "--dataset-input", str(Path(args.dataset_input).resolve()),
                "--submission-kit", str(Path(args.submission_kit).resolve())]
+    command.extend(optional_limits(args))
+    if args.total_budget_seconds is not None:
+        command.extend(["--total-budget-seconds", str(args.total_budget_seconds)])
     if args.parent_state:
         command.extend(["--parent-state", str(Path(args.parent_state).resolve())])
+    if getattr(args, "native_resume", None):
+        command.extend(["--native-resume", str(Path(args.native_resume).resolve()),
+                        "--recovery-from", str(Path(args.recovery_from).resolve())])
     if args.prepare_only or args.dry_run:
         command.append("--prepare-only")
     return command
@@ -133,13 +157,15 @@ def single_command(args, selection):
 def batch_command(args):
     command = [sys.executable, "-m", "training.scripts.batch", "--jobs", str(Path(args.jobs_root).resolve()),
                "--runtime", str(Path(args.runtime).resolve()), "--output", str(Path(args.output).resolve()),
-               "--deadline-utc", args.deadline_utc, "--gpu-hours", str(args.gpu_hours),
-               "--training-budget-seconds", str(args.training_budget_seconds),
-               "--episode-total-budget-seconds", str(args.total_budget_seconds),
                "--recipe", args.recipe, "--selection-policy", args.selection_policy,
                "--dataset-root", str(Path(args.dataset_input).resolve()),
                "--submission-kit", str(Path(args.submission_kit).resolve()),
                "--shard-index", str(args.shard_index), "--shard-count", str(args.shard_count)]
+    command.extend(optional_limits(args))
+    if args.gpu_hours is not None:
+        command.extend(["--gpu-hours", str(args.gpu_hours)])
+    if args.total_budget_seconds is not None:
+        command.extend(["--episode-total-budget-seconds", str(args.total_budget_seconds)])
     for name in ("tiers", "episodes"):
         value = getattr(args, name)
         if value is not None:
@@ -173,7 +199,7 @@ def main(argv=None):
         warn_input_selection(selection)
         command = single_command(args, selection)
     # An absolute script invocation works from any directory. Child module
-    # discovery and source identity always use this committed repository.
+    # discovery and source identity always use this source directory.
     return subprocess.run(command, cwd=ROOT, check=False).returncode
 
 

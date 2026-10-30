@@ -13,7 +13,7 @@ fixed rule, and exports world 0 in the official trajectory format.
 
 ```text
 training/
-  scripts/      preparation, runtime setup, bounded train/pipeline/batch entrypoints
+  scripts/      preparation, runtime setup, train/pipeline/batch entrypoints
   core/         refinement objective/termination, configurations, checkpoint/input helpers
   evaluate/     uninterrupted evaluation, metrics, clean scoring, export and collection
   configs/      committed policy resource and execution defaults
@@ -39,7 +39,7 @@ not reconstruct videos. Tier 3 needs an upstream reconstruction with a declared
 released-input coordinate mapping. Missing jobs or mappings fail CPU preflight.
 
 `configs/policy.json` contains committed defaults for worlds, replay capacity,
-optimizer horizon, transition caps and evaluation time reserves. Reward and
+optimizer horizon and transition targets. Wall-time limits are optional. Reward and
 termination settings are assembled in `core/configuration.py`. Changing these
 files changes the method/source identity; existing output directories cannot
 silently switch configurations.
@@ -50,15 +50,17 @@ silently switch configurations.
 python training/scripts/run.py \
   --job /data/jobs/tier2/episode_000003 \
   --runtime /opt/v2d-runtime --output /runs/tier2/episode_000003 \
-  --deadline-utc "$DEADLINE_UTC" \
   --dataset-input /data/inputs/tier2 --submission-kit /opt/v2d_submission_kit
 ```
 
-Set a future UTC deadline first. Add `--prepare-only` to perform CPU validation
+There is no default training/evaluation time limit or calendar deadline. Runs finish
+the requested transition targets. Add `--prepare-only` to perform CPU validation
 without training. A variant directory is used explicitly; an episode directory
 prefers corrected and otherwise warns before using original. False or unknown
 correction acceptance flags remain recorded as guidance quality, not proof of
-physical correctness. Corrupt or failed inputs are errors.
+physical correctness. Missing source samples are completed from same-tier neighbours
+with warnings and repair records. An unusable correction can fall back to a
+validated original; asset/hash/schema mismatches remain errors.
 
 The entry selects `tier1-precision` with success ranking for Tier 1: native
 acquisition followed by up to 90M precision transitions. Tier 2/3 selects
@@ -85,7 +87,7 @@ step after those choices are fixed.
 
 Use `--bundle /data/bundle --tier 2 --episode 3 --urdf /path/main_with_hand.urdf`
 instead of `--job` to prepare an available correction-bundle episode before the
-same pipeline. Use `--jobs-root /data/jobs --gpu-hours 97.5` for a serial batch;
+same pipeline. Use `--jobs-root /data/jobs` for a serial batch;
 the dataset argument then names the root containing `tier1/`, `tier2/`, `tier3/`.
 Batch `--dry-run` checks the exact input roster only; single-job `--prepare-only`
 also performs native scene and export preflight. See the handoff for shard and
@@ -96,7 +98,13 @@ complete-roster examples.
 Build from the repository root with `docker build -f training/Dockerfile -t
 v2d-policy .`. The CUDA 13 image requires a compatible NVIDIA host driver (580 or
 newer). Its Docker-specific allowlist excludes local experiments and outputs.
-Mount a clean committed clone at `/workspace`, plus your input/output volumes,
-when running the pipeline: committed Git source identity is required at launch.
+Mount the checkout at `/workspace`, plus your input/output volumes. Normal runs
+allow uncommitted edits and preserve exact source hashes/snapshots. Add
+`--strict-reproducibility` to require clean committed execution code.
+
+Explicit `--deadline-utc`, `--training-budget-seconds`, `--total-budget-seconds`
+and stage `--*-max-seconds` options remain available. Omitting them leaves wall
+time uncapped; transition targets remain fixed. Batch failures are recorded per
+episode and the remaining roster continues. See the handoff for native recovery.
 The image build installs dependencies and performs CPU imports; it does not train
 or establish GPU compatibility for a particular host.

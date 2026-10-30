@@ -1,4 +1,5 @@
 import time
+import warnings
 from dataclasses import dataclass
 import numpy as np
 import pinocchio as pin
@@ -7,6 +8,7 @@ from pink.tasks import FrameTask, PostureTask
 from scipy.spatial.transform import Rotation
 from .contacts import TIP_NAMES
 from .constraints import OutputVelocityLimit, HullAvoidanceTask
+from ..dataprocessing.completion import fill_missing
 
 
 @dataclass
@@ -15,6 +17,28 @@ class SolveResult:
     iterations: np.ndarray
     stopped: list[str]
     elapsed_seconds: float
+
+
+def repair_failed_frames(output, missing, times, kin, velocity_fraction):
+    """Repair only numerically missing IK frames; retain finite solved frames."""
+    result = np.asarray(output)
+    if not missing:
+        return result
+    samples = result.copy()
+    samples[missing] = np.nan
+    base, _ = fill_missing(times, samples[:, :3])
+    rotations, _ = fill_missing(times, samples[:, [6, 3, 4, 5]], quaternion=True)
+    joints, _ = fill_missing(times, samples[:, 7:])
+    result = np.concatenate((base, rotations[:, [1, 2, 3, 0]], joints), axis=1)
+    low, high = kin.robot.model.lowerPositionLimit[7:], kin.robot.model.upperPositionLimit[7:]
+    if np.any(joints < low - 1e-4) or np.any(joints > high + 1e-4):
+        raise ValueError('Repaired IK violates joint limits')
+    if len(times) > 1:
+        bounds = np.diff(times)[:, None] * kin.robot.model.velocityLimit[6:] * velocity_fraction
+        if np.any(np.abs(np.diff(joints, axis=0)) > bounds + 1e-6):
+            raise ValueError('Repaired IK violates joint velocity limits')
+    warnings.warn(f'Interpolated numerically missing IK frames {missing}; finite solved frames retained', RuntimeWarning)
+    return result
 
 
 def solve_contact_aware(kin, motion, body, contacts, surface, cfg, progress=print):
@@ -28,6 +52,7 @@ def solve_contact_aware(kin, motion, body, contacts, surface, cfg, progress=prin
     output = []
     iterations = []
     stopped = []
+    missing = []
     previous = None
     start = time.perf_counter()
     for t in range(len(motion.timestamps)):
@@ -67,11 +92,19 @@ def solve_contact_aware(kin, motion, body, contacts, surface, cfg, progress=prin
                 limits=limits,
                 safety_break=True,
             )
+            if not np.isfinite(velocity).all():
+                reason = 'missing_numerical_frame'
+                kin.configuration.update(initial)
+                break
             kin.configuration.integrate_inplace(velocity, kin.dt)
             # QP feasibility tolerances can leave a hinge a few microradians
             # outside its bound, which Pink rejects on the next iteration.
             # Project numerical residue only; substantial violations still fail.
             bounded = kin.configuration.q.copy()
+            if not np.isfinite(bounded).all():
+                reason = 'missing_numerical_frame'
+                kin.configuration.update(initial)
+                break
             low, high = kin.robot.model.lowerPositionLimit[7:], kin.robot.model.upperPositionLimit[7:]
             violation = np.maximum(low-bounded[7:], bounded[7:]-high)
             if np.max(violation) > 1e-4:
@@ -85,6 +118,8 @@ def solve_contact_aware(kin, motion, body, contacts, surface, cfg, progress=prin
                 reason = "small_step"
                 break
         q = kin.configuration.q.copy()
+        if reason == 'missing_numerical_frame':
+            missing.append(t)
         # Same ground proxy as baseline; all diagnostics are computed AFTER it.
         soles = np.array(
             [
@@ -108,7 +143,8 @@ def solve_contact_aware(kin, motion, body, contacts, surface, cfg, progress=prin
                 f"Contact IK {t + 1}/{len(motion.timestamps)} ({time.perf_counter() - start:.1f}s)"
             )
     return SolveResult(
-        np.asarray(output), np.asarray(iterations), stopped, time.perf_counter() - start
+        repair_failed_frames(output, missing, motion.timestamps, kin, cfg['velocity_fraction']),
+        np.asarray(iterations), stopped, time.perf_counter() - start
     )
 
 

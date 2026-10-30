@@ -1,5 +1,5 @@
 # Build from repository root: docker build -f training/Dockerfile -t v2d-policy .
-# Run with a committed clone mounted at /workspace; GPU host driver >=580.
+# Mount the working checkout at /workspace when developing; GPU host driver >=580.
 FROM nvidia/cuda:13.0.2-runtime-ubuntu24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -9,6 +9,7 @@ RUN python3 -m venv /opt/bootstrap-env && /opt/bootstrap-env/bin/pip install --n
 ENV PATH="/opt/bootstrap-env/bin:${PATH}"
 WORKDIR /workspace
 COPY training /workspace/training
+COPY data_tools/__init__.py data_tools/observation_completion.py /workspace/data_tools/
 RUN python -m training.scripts.bootstrap --runtime /opt/v2d-runtime --download-assets \
     && python -m training.scripts.setup_runtime --runtime /opt/v2d-runtime \
         --venv /opt/v2d-policy-env --profile cuda13 --driver-major 580 > /tmp/native-setup.sh \

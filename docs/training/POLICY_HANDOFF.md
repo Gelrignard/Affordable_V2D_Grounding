@@ -1,6 +1,6 @@
 # Automatic policy training handoff
 
-Use one clean committed checkout for all tiers. `training/scripts/run.py` takes an available prepared episode or correction bundle through validation, native policy acquisition, tier-specific refinement, full unassisted evaluation, deterministic checkpoint selection and official trajectory export. Its batch mode uses a stable roster and disjoint shard indices. No agent or manual checkpoint choice is needed.
+Use the same published implementation for all tiers when reproducing results. Normal research runs also accept uncommitted code and preserve a source snapshot; `--strict-reproducibility` requires clean committed execution code. `training/scripts/run.py` takes an available prepared episode or correction bundle through validation, native policy acquisition, tier-specific refinement, full unassisted evaluation, deterministic checkpoint selection and official trajectory export. Its batch mode uses a stable roster and disjoint shard indices. No agent or manual checkpoint choice is needed.
 
 ## Inputs and environment
 
@@ -51,14 +51,13 @@ The exporter checks the complete reference transform against `reference.npz`; it
 
 ## One episode, one command
 
-Set `DEADLINE_UTC` to the actual future ISO8601 UTC deadline. Run from this
-repository in the native environment:
+Run from this repository in the native environment. There is no default wall-time
+limit or calendar deadline; training finishes its requested transition targets:
 
 ```bash
 python training/scripts/run.py \
   --job /data/jobs/tier1/episode_000003 \
   --runtime /opt/v2d-runtime --output /runs/tier1/episode_000003 \
-  --deadline-utc "$DEADLINE_UTC" \
   --dataset-input /data/inputs/tier1 --submission-kit /opt/v2d_submission_kit
 ```
 
@@ -71,8 +70,10 @@ selection prefers the produced `corrected` job, otherwise uses `original` with
 a warning. An explicitly named original remains original. A correction marked
 `physical_accepted=false`, a diagnostic candidate, or a reference without contact
 labels is usable guidance with its limitations recorded; it is not promoted to
-physically accepted ground truth. Corrupt artifacts, inconsistent hashes and
-failed correction-bundle stages are errors, not automatic fallback cases.
+physically accepted ground truth. Corrupt assets and inconsistent hashes remain errors. A failed correction stage
+may still supply a validated trajectory; otherwise automatic selection tries its
+validated original. Missing source samples are completed before training with
+explicit frame-level repair records. No clean target is used for repair.
 
 Add `--prepare-only` for CPU input, native scene and export preflight without
 training. Supply `--parent-state /path/state_N.safetensors` only to reuse a
@@ -88,7 +89,6 @@ python training/scripts/run.py \
   --bundle /data/portable_bundle --tier 2 --episode 3 \
   --urdf /opt/v2d-runtime/robotic_grounding/flash_chord/src/flash_chord/assets/urdfs/g1/main_with_hand.urdf \
   --runtime /opt/v2d-runtime --output /runs/tier2/episode_000003 \
-  --deadline-utc "$DEADLINE_UTC" \
   --dataset-input /data/inputs/tier2 --submission-kit /opt/v2d_submission_kit
 ```
 
@@ -126,14 +126,13 @@ experiments are not enabled by these automatic recipes. Tier 3 uses the same
 configuration and input contract but has not been GPU validated.
 
 All tiers use 2,048 worlds, batch size 2,048, 5M GPU replay, the same native
-FlashSAC/SONIC action interface and the original optimizer clocks. The default
-budget is 10,800 training seconds and 11,700 total GPU seconds per episode,
-including evaluation. The native acquisition child has a 9,000-second cap and
-must finish before refinement. The Tier 2/3 precision stage must reach its full
-60M target before load transfer; a short first stage stops rather than continuing
-from a different parent. Tier 1 refinement and the final Tier 2/3 30M stage may
-end cleanly at a valid checkpoint under the wall-time cap. The saved status states
-what actually ran.
+FlashSAC/SONIC action interface and the original optimizer clocks. These are the
+published recipe defaults, not universal validity rules for every compatible
+native configuration. There are no default native/refinement/evaluation wall
+limits, aggregate wall budgets or calendar deadlines. Native acquisition and the
+Tier 2/3 first refinement must finish their requested transition targets before
+the next phase. Explicit user limits can still stop a phase; saved status records
+actual progress, and a partial native checkpoint can be resumed as described below.
 
 The pipeline fixes candidate checkpoints before evaluation and records their
 actual transition counts in `candidate_plan.json`. Native save rounding means a
@@ -160,8 +159,7 @@ Preview the validated roster without GPU work:
 ```bash
 python training/scripts/run.py \
   --jobs-root /data/jobs --runtime /opt/v2d-runtime --output /runs/shard_0 \
-  --shard-index 0 --shard-count 3 --require-complete \
-  --gpu-hours 97.5 --deadline-utc "$DEADLINE_UTC" \
+  --shard-index 0 --shard-count 3 --episodes $(seq 0 29) --require-complete \
   --dataset-input /data/inputs --submission-kit /opt/v2d_submission_kit \
   --dry-run
 ```
@@ -172,11 +170,12 @@ directory itself. Automatic recipe/ranking selection happens independently for
 each job, so one batch may contain all tiers.
 
 Give teammates distinct `--shard-index` values, the same `--shard-count`, the
-same source commit and the same input roster. `--require-complete` requires all
-30 identities per requested tier before any GPU work. `--tiers 2 --episodes 3 25`
-selects a subset; `--max-jobs` caps a shard. The 97.5-hour example reserves 3.25
-hours for each of 30 episodes; choose the actual budget and deadline for your
-workload. Batch `--dry-run` validates the roster and portable inputs only; use a
+same source commit and the same input roster. `--require-complete` checks every explicitly requested episode ID before GPU work;
+the example supplies the released 0–29 roster. Hidden/custom inputs can use other
+nonnegative IDs without changing the public training code. `--tiers 2 --episodes 3 25`
+selects a subset; `--max-jobs` caps a shard. Wall-time limits such as `--gpu-hours`, `--training-budget-seconds` and
+`--deadline-utc` are opt-in. A terminal episode failure is recorded and the batch
+continues with the other episodes after the owned worker exits. Batch `--dry-run` validates the roster and portable inputs only; use a
 single-job `--prepare-only` for native scene/export preflight.
 
 ## Outputs, limits and resume
@@ -196,10 +195,44 @@ Repeat the identical command to verify and reuse completed work. A completed
 run is checked without new GPU work even after its original deadline. Source,
 paths, inputs, budgets and deadlines cannot silently change in the same output.
 Partial or failed GPU phases do not restart automatically. A host lock and GPU
-idle checks prevent overlapping workers; budgets and calendar deadlines apply
-to every child. Batch accounting includes failed work and stops before a new
-episode when its remaining allowance cannot fit. This command neither rents
+idle checks prevent overlapping workers. Only explicitly supplied budgets and
+calendar deadlines constrain children. Accounting includes failed work. Existing
+finite ledgers keep their original limits until an explicit budget update. This command neither rents
 compute nor uploads a leaderboard submission.
+
+## Partial-native recovery and missing data
+
+A native checkpoint must resume its saved native curriculum and optimizer clocks;
+`--parent-state` is for a completed native parent, not a partial bootstrap. Use:
+
+```bash
+python -m training.scripts.guard set-budget --ledger /runs/old/ledger.json \
+  --authorization-reason "Remove the old wall-time limits for this recovery"
+python -m training run --job /data/jobs/tier1/episode_000007 \
+  --runtime /opt/v2d-runtime --output /runs/recovered/episode_000007 \
+  --native-resume /runs/old/bootstrap/checkpoints/state_N.safetensors \
+  --recovery-from /runs/old \
+  --dataset-input /data/inputs/tier1 --submission-kit /opt/v2d_submission_kit
+```
+
+The first command is needed only to explicitly release an old ledger's limits.
+It retains the old policy record and every charged job. Recovery uses a new output
+folder, restores the saved compatible native state and refills fresh replay;
+simulator and replay state are not a bit-exact continuation. No repeated retry is
+scheduled automatically.
+
+Missing source positions/scalars use local timeline interpolation; missing
+rotations use SLERP, with nearest-observation endpoint holds. Valid samples and
+original inputs stay unchanged. Repair masks/warnings are retained. An entirely
+absent channel cannot be inferred, so a usable original reference is preferred
+when available. Actual policy rollout outputs and optimizer state are never
+interpolated. Nonfinite telemetry is preserved with field names; a diagnostic
+NaN alone does not invalidate a healthy learner. Genuine nonfinite learner or
+transition state remains an episode fault with recovery evidence.
+
+A source snapshot records the actual executed files, commit and dirty state.
+Historical artifacts retain the commits that produced them; a newer implementation
+URL does not rewrite past training or evaluator provenance.
 
 ## Official evaluation packaging
 

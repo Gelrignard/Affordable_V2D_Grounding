@@ -4,20 +4,20 @@ Robot grounding from human motion, object poses, and contact observations. The m
 
 ## Get started
 
-From the installed native environment and a committed checkout, one command runs
+From the installed native environment and this checkout, one command runs
 an available episode through training, evaluation, selection and official export:
 
 ```bash
 python training/scripts/run.py \
   --job /data/jobs/tier1/episode_000003 \
   --runtime /opt/v2d-runtime --output /runs/tier1/episode_000003 \
-  --deadline-utc "$DEADLINE_UTC" \
   --dataset-input /data/inputs/tier1 --submission-kit /opt/v2d_submission_kit
 ```
 
-Set `DEADLINE_UTC` to a future ISO8601 deadline. `python -m training run` is
+Wall-time limits and calendar deadlines are optional. `python -m training run` is
 equivalent. The episode directory prefers its corrected job, otherwise uses its
-original job with an explicit warning; invalid artifacts remain errors. Add
+original job with an explicit warning. Missing source samples are completed from
+neighbouring observations with recorded repair masks; valid samples stay unchanged. Add
 `--prepare-only` for CPU preflight. `--bundle` can prepare one episode from a
 correction bundle first; `--jobs-root` runs prepared batches and shards.
 

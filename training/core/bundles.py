@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -75,7 +76,15 @@ class EpisodeBundle:
             if (folder / "contact_guidance.npz").exists()
             else {}
         )
-        validate_reference(ref)
+        from .input_repair import repair_reference, UnusableReference
+        ref, repairs = repair_reference(ref)
+        try:
+            validate_reference(ref)
+        except ValueError as exc:
+            raise UnusableReference(str(exc)) from exc
+        if repairs:
+            manifest = {**manifest, 'input_repairs': repairs}
+            warnings.warn(f'Filled missing source reference samples: {repairs}', RuntimeWarning)
         if guide:
             if not np.array_equal(guide["timestamps"], ref["timestamps"]):
                 raise ValueError("guidance and motion timelines differ")

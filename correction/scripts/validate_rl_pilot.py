@@ -1,4 +1,4 @@
-"""Read-only validation of a complete paired export; not a physics success test."""
+"""Validate a paired export; the CLI writes validation.json, not a physics verdict."""
 import argparse
 import hashlib
 import json

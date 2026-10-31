@@ -30,14 +30,16 @@ The same source revision contains both tier-specific recipes, using 5M GPU repla
 
 The placement phase falls back explicitly to precision when its checked support
 geometry or release window is inapplicable. Tier 3 uses the same configured
-method but has not been GPU validated. These are training recipes, not a claim
-that every episode succeeds. The entry point consumes prepared motion artifacts
-and does not reconstruct raw video.
+grounding method on reconstructed inputs. These are training recipes, not a claim
+that every episode succeeds. The training entry point consumes prepared motion
+artifacts. The separate [video processing package](video_processing/README.md)
+provides reconstruction, reviewed-anchor repair, and conversion entry points.
 
 - [Prepare motion and contact references](docs/correction/PIPELINE.md)
 - [Run one episode or a batch of prepared episodes](docs/training/POLICY_HANDOFF.md)
 - [Training method and the role of dynamics](docs/training/POLICY_METHOD.md)
 - [CPU dependencies](docs/SETUP.md)
+- [Reproduce Tier 3 inputs and record execution provenance](docs/TIER3_REPRODUCTION.md)
 
 ## Pipeline
 
@@ -59,6 +61,7 @@ resuming completed episodes. See the handoff for input requirements and commands
 ## Repository layout
 
 ```text
+video_processing/   CARI4D reconstruction, image-guided repair, and motion conversion
 correction/         Dynamics, contact geometry, reference correction, and export
 retargeting/        Human-motion adapters and contact-aware G1/Dex3 kinematics
 data_tools/         Dataset decoding and dependency asset downloads

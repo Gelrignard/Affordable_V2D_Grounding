@@ -14,3 +14,12 @@ Robot assets, pretrained models, and datasets are downloaded separately and
 retain their respective upstream terms. They are not relicensed or included
 by publishing this project. This notice does not assign a new project-wide
 license to the original code in this repository.
+
+The optional `video_processing/` package invokes a separately installed NVIDIA
+CARI4D/SAM2/CoCoNet checkout pinned to
+`193382a184308f6800331f3db829f76dc4294cfe`. Its adapters use the upstream MHR,
+FoundationPose, and SOMA APIs; the upstream source and model weights are not
+vendored. Preserve NVIDIA's license notices in that separate checkout. SAM2,
+SAM 3D Body, MoGe, FoundationPose, CARI4D, and SOMA assets retain their respective
+licenses and access conditions. A download instruction does not grant model or
+dataset redistribution rights.

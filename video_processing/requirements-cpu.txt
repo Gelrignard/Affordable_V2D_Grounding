@@ -1,0 +1,3 @@
+# Contract checks only; the external CUDA inference runtime has more dependencies.
+numpy==1.26.3
+scipy==1.14.1

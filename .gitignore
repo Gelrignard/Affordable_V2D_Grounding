@@ -51,6 +51,19 @@ __pycache__/
 /correction/scripts/capture_book.cjs
 /data_tools/tier1_diagnostic.py
 
+# Video processing source is public; downloaded inputs and generated artifacts are not.
+/video_processing/artifacts/
+/video_processing/runtime/
+/video_processing/**/.cache/
+/video_processing/**/*.npz
+/video_processing/**/*.pkl
+/video_processing/**/*.pt
+/video_processing/**/*.pth
+/video_processing/**/*.h5
+/video_processing/**/*.mp4
+/video_processing/**/*.glb
+/video_processing/**/*.zip
+
 # Public correction entry points; other local trial scripts stay private.
 /correction/scripts/*.py
 !/correction/scripts/__init__.py

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "video_to_data": {"url": "https://github.com/nvidia-isaac/video_to_data.git", "commit": "193382a184308f6800331f3db829f76dc4294cfe"},
+  "pytorch3d": {"url": "https://github.com/facebookresearch/pytorch3d.git", "commit": "33824be3cbc87a7dd1db0f6a9a9de9ac81b2d0ba", "release": "v0.7.9"},
+  "nvdiffrast": {"url": "https://github.com/NVlabs/nvdiffrast.git", "commit": "729261dc64c4241ea36efda84fbf532cc8b425b8", "release": "v0.3.3", "note": "Retains the real OpenGL/EGL rasterizer used by the audited pipeline; v0.4.0 changes it to a CUDA alias."},
+  "moge": {"url": "https://github.com/microsoft/MoGe.git", "commit": "925b8ed835a7a9cdb7578ba15c658a0afc969030"},
+  "utils3d": {"url": "https://github.com/EasternJournalist/utils3d.git", "commit": "3fab839f0be9931dac7c8488eb0e1600c236e183"},
+  "pipeline": {"url": "https://github.com/EasternJournalist/pipeline.git", "commit": "866f059d2a05cde05e4a52211ec5051fd5f276d6"},
+  "sam2": {"url": "https://github.com/facebookresearch/sam2.git", "commit": "2b90b9f5ceec907a1c18123530e92e794ad901a4"}
+}

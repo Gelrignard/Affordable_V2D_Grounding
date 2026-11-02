@@ -85,6 +85,25 @@ Submission export always uses world
 0, never an outcome-selected world. Clean-reference scoring is a separate CPU
 step after those choices are fixed.
 
+For Tier 2/3, an optional metadata sidecar supplies the official scored row IDs.
+Create it once at the input root before CPU preflight:
+
+```bash
+python -m training.evaluate.scoring_frames \
+  --reference-root /data/released/tier1 --dataset-input /data/inputs/tier2
+```
+
+This reads only released frame indices, episode IDs, visibility and schema identity
+metadata; it does not decode clean poses. It creates `official_scoring_frames.json`
+for all episodes available in that pinned source cache. Keep the source cache and
+its download manifest available read-only: preflight, export and collection verify
+their hashes and derive the same grid again. Existing sidecars are never overwritten.
+Tier 2/3 without a sidecar retains the full-frame export requirement; input-tier
+occlusion alone cannot remove scored rows. All training and evaluation frames/worlds
+remain required and validated. Only the exported world-0 artifact omits officially
+unscored rows, retaining the original frame indices. Pose conversion still uses the
+policy's own input tier. Tier 1's existing visibility handling is unchanged.
+
 Use `--bundle /data/bundle --tier 2 --episode 3 --urdf /path/main_with_hand.urdf`
 instead of `--job` to prepare an available correction-bundle episode before the
 same pipeline. Use `--jobs-root /data/jobs` for a serial batch;

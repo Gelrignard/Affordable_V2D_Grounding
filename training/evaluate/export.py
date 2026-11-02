@@ -28,6 +28,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from training.evaluate import score_clean_reference as validation
+from training.evaluate import scoring_frames
 
 
 SUBMISSION_READER = "v2dlb/submission_parquet.py"
@@ -68,7 +69,7 @@ def read_input_reference(root, episode, kit):
     if (root / "meta").is_dir():
         data = validation.read_dataset(root, episode, kit)
         data.source_sha256 = data.provenance["parquet"]["sha256"]
-        return data
+        return scoring_frames.attach(data, episode)
     manifest_path = root / "input_frame_manifest.json"
     if not manifest_path.is_file():
         raise ValueError("Input must be a released Tier1/2 dataset or a prepared Tier3 input_frame_manifest.json directory")
@@ -98,7 +99,7 @@ def read_input_reference(root, episode, kit):
             or not np.array_equal(frames, np.arange(len(frames))) or pose.shape != (len(frames), 1, 7)
             or not np.isfinite(pose).all() or np.any(np.linalg.norm(pose[..., 3:], axis=-1) < 1e-8)):
         raise ValueError("Tier3 input-frame NPZ must contain finite poses on the complete ordered frame grid")
-    return SimpleNamespace(root=root, path=path, sequence=sequence, frames=frames.astype(np.int64),
+    result = SimpleNamespace(root=root, path=path, sequence=sequence, frames=frames.astype(np.int64),
                            reference=SimpleNamespace(frame_index=frames, pose_xyzw=pose, object_names=names),
                            tier=3, source_sha256=source_hash,
                            provenance={"input_frame_archive": validation.identity(path),
@@ -106,6 +107,7 @@ def read_input_reference(root, episode, kit):
                                        "tier": 3, "source_sequence_id": sequence, "object_names": names,
                                        "source_sha256": source_hash, "declared_coordinate_frame": "released_track2_world",
                                        "mapping_source": "prepared input-only mapping; no calibration inferred by exporter"})
+    return scoring_frames.attach(result, episode)
 
 
 def verify_job(job, episode, input_data, recorded_reference):
@@ -209,12 +211,14 @@ def input_frame_conversion(kit, achieved, reference, released, stored_transform)
 
 
 def export_frame_grid(data):
-    """Tier1's own released visibility is its official scoring grid.
+    """Use authenticated official row IDs without changing the full source cohort.
 
-    The full source rollout remains mandatory. Tier2/3 input visibility cannot
-    redefine the clean scoring grid, so those inputs still require every frame.
+    Tier1 supplies its own scoring visibility. Tier2/3 may carry a verified
+    metadata-only official grid; without one they retain the legacy full grid.
+    Input-tier occlusion alone never authorizes omitting an officially scored row.
     """
-    frames = np.asarray(data.reference.frame_index if data.tier == 1 else data.frames, dtype=np.int64)
+    frames = np.asarray(data.reference.frame_index if data.tier == 1 else
+                        getattr(data, "official_scoring_frames", data.frames), dtype=np.int64)
     if (frames.ndim != 1 or not len(frames) or np.any(np.diff(frames) <= 0)
             or not np.isin(frames, data.frames).all()):
         raise ValueError("Released export frame grid is empty or malformed")
@@ -252,6 +256,10 @@ def validate_export_inputs(job, dataset_input, episode, kit_root):
              kit_root / SUBMISSION_READER, Path(__file__), Path(validation.__file__)]
     paths.extend(Path(value["path"]) for value in data.provenance.values()
                  if isinstance(value, dict) and "path" in value and "sha256" in value)
+    paths.extend(Path(path) for path in data.provenance.get("official_scoring_frames", {}).get(
+        "source_file_sha256", {}))
+    if "official_scoring_frames" in data.provenance:
+        paths.append(Path(scoring_frames.__file__))
     return {"schema": "v2d_policy_export_preflight_v1", "state": "verified",
             "tier": data.tier, "episode": episode, "sequence_id": data.sequence,
             "frame_count": len(data.frames), "clean_reference_used": False,
@@ -341,9 +349,8 @@ def export_rollout(*, arrays, job, dataset_input, episode, kit_root, output_dir,
         checkpoint_provenance = validation.identity(checkpoint)
         if checkpoint_provenance["sha256"] != provenance["checkpoint_sha256"]:
             raise ValueError("Supplied policy checkpoint hash does not match the evaluated policy")
-    # The complete source cohort was authenticated above. Only Tier1's released
-    # invisible frames may be absent from the official artifact; no outcome or
-    # world selection affects this grid and no missing pose is manufactured.
+    # Authenticate the complete source cohort before selecting official scored
+    # rows. No outcome/world selection affects this grid and no pose is invented.
     frames = export_frame_grid(input_data)
     released = kit.packer.input_frame_reference(input_data.root, episode, frames, 1,
                                                 input_data.reference.object_names)
@@ -353,7 +360,9 @@ def export_rollout(*, arrays, job, dataset_input, episode, kit_root, output_dir,
                         "native_trajectory": validation.identity(native_path), "portable_job": job_provenance,
                         "released_input": input_data.provenance, "policy_checkpoint": checkpoint_provenance}
     helper_hashes = {"export_policy_rollout.py": validation.sha256(__file__),
-                     "score_clean_reference.py": validation.sha256(validation.__file__)}
+                      "score_clean_reference.py": validation.sha256(validation.__file__)}
+    if "official_scoring_frames" in input_data.provenance:
+        helper_hashes["scoring_frames.py"] = validation.sha256(scoring_frames.__file__)
     output_dir.mkdir(parents=True, exist_ok=False)
     temporary = output_dir / ".trajectory.pending.parquet"
     artifact = output_dir / f"episode_{episode:06d}.parquet"
@@ -481,16 +490,21 @@ def collect_exports(records, output_root, kit_root, expected_by_tier=None):
                 or not np.isin(frames, source_frames).all()
                 or np.setdiff1d(source_frames, frames).tolist() != omitted):
             raise ValueError("Collected export has an invalid source/visibility frame grid")
-        if omitted:
-            if tier != 1:
-                raise ValueError("Only Tier1 released visibility may omit source frames")
-            released = manifest["inputs"]["released_input"]
-            for key in ("parquet", "download_manifest"):
+        released = manifest["inputs"]["released_input"]
+        grid_provenance = released.get("official_scoring_frames")
+        if omitted or grid_provenance:
+            if tier != 1 and not grid_provenance:
+                raise ValueError("Tier2/3 omissions require authenticated official scoring-grid metadata")
+            input_keys = (("parquet", "download_manifest") if tier in (1, 2) else
+                          ("input_frame_archive", "input_frame_manifest"))
+            for key in (*input_keys, *(("official_scoring_frames",) if grid_provenance else ())):
                 if validation.sha256(released[key]["path"]) != released[key]["sha256"]:
-                    raise ValueError("Released Tier1 visibility provenance changed")
-            data = read_input_reference(Path(released["download_manifest"]["path"]).parent, episode, kit)
-            if not np.array_equal(export_frame_grid(data), frames) or not np.array_equal(data.frames, source_frames):
-                raise ValueError("Export omissions differ from released Tier1 visibility")
+                    raise ValueError("Released input/scoring-grid provenance changed")
+            data = read_input_reference(Path(released[input_keys[1]]["path"]).parent, episode, kit)
+            if (data.tier != tier or not np.array_equal(export_frame_grid(data), frames)
+                    or not np.array_equal(data.frames, source_frames)
+                    or data.provenance.get("official_scoring_frames") != grid_provenance):
+                raise ValueError("Export omissions differ from authenticated official scoring rows")
         provenance = reader.provenance(trajectory)
         if (trajectory.episode_index != episode or not np.array_equal(trajectory.frame_index, frames)
                 or manifest.get("source_frame_indices") != frames.tolist()

@@ -37,6 +37,7 @@ and does not reconstruct raw video.
 - [Prepare motion and contact references](docs/correction/PIPELINE.md)
 - [Run one episode or a batch of prepared episodes](docs/training/POLICY_HANDOFF.md)
 - [Training method and the role of dynamics](docs/training/POLICY_METHOD.md)
+- [Replay the submitted container with the launcher fix](submission/README.md)
 - [CPU dependencies](docs/SETUP.md)
 
 ## Pipeline
@@ -67,6 +68,7 @@ training/
   core/            Policy training, refinement, and reference adapters
   evaluate/        Rollouts, leaderboard metrics, and official-format export
   configs/         Reusable configuration defaults
+submission/         Submitted-container launcher and offline replay instructions
 setup/              CPU environment specifications
 docs/               Setup, method, and artifact interfaces
 ```
